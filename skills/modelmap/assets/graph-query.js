@@ -1,179 +1,226 @@
-// floorplan graph queries, shared by the viewer (as page tools for the Claude app) and by
-// floorplan/query.mjs (as a CLI that the Claude Code CLI or Codex calls). Plain script: no imports, no exports.
-// Item ids: n:<node id>  f:<file path>  r:<route index>  s:<file path>#<export index>
+// Derived from floorplan v0.11.0 (MIT): skills/floorplan/assets/graph-query.js
+// modelmap graph queries, shared by the viewer (as page tools for the Claude app) and by
+// modelmap/query.mjs (as a CLI that the Claude Code CLI or Codex calls). Plain script: no imports, no exports.
+// Item ids: n:<node id>. A node id is the module's instance path (blocks.0.attn); the model itself is n:root.
+// Every number these lookups print is worked out here, in integers, so an answer can copy it and never has to
+// do arithmetic of its own.
 
 function createGraphQuery(G) {
   const nodes = new Map(G.nodes.map((n) => [n.id, n]));
-  const files = new Map(G.files.map((f) => [f.p, f]));
-  const routes = G.routes || [];
-  const routesByFile = new Map();
-  routes.forEach((r, i) => { if (!routesByFile.has(r.f)) routesByFile.set(r.f, []); routesByFile.get(r.f).push(i); });
   const kidsOf = new Map();
-  for (const n of G.nodes) if (n.parent) { if (!kidsOf.has(n.parent)) kidsOf.set(n.parent, []); kidsOf.get(n.parent).push(n.id); }
+  for (const n of G.nodes) if (n.parent != null) { if (!kidsOf.has(n.parent)) kidsOf.set(n.parent, []); kidsOf.get(n.parent).push(n.id); }
+  // a member of a folded run (blocks.3) is shown by the run's card (blocks.0)
+  const foldOf = new Map();
+  for (const n of G.nodes) for (const p of n.m?.fold?.members || []) if (p !== n.id && !nodes.has(p)) foldOf.set(String(p), n.id);
 
-  const nodeChain = (id) => { const out = []; let n = nodes.get(id); while (n) { out.push(n.id); n = n.parent ? nodes.get(n.parent) : null; } return out; };
-  /** The node ids an item lives under, deepest first. */
-  function owners(id) {
-    if (id.startsWith('n:')) return nodeChain(id.slice(2));
-    if (id.startsWith('f:')) { const f = files.get(id.slice(2)); return f ? nodeChain(f.n) : []; }
-    if (id.startsWith('r:')) { const r = routes[+id.slice(2)]; return r ? owners('f:' + r.f) : []; }
-    if (id.startsWith('s:')) return owners('f:' + id.slice(2).replace(/#\d+$/, ''));
-    return [];
-  }
-  function brief(id) {
-    if (id.startsWith('n:')) { const n = nodes.get(id.slice(2)); return n && { id, type: n.kind === 'external' ? 'external' : 'module', name: n.label, description: n.summary || '' }; }
-    if (id.startsWith('f:')) { const f = files.get(id.slice(2)); return f && { id, type: 'file', name: f.name, description: f.d || '', path: f.p }; }
-    if (id.startsWith('r:')) { const r = routes[+id.slice(2)]; return r && { id, type: 'endpoint', name: r.name, description: r.d || '', path: `${r.m} ${r.p}` }; }
-    if (id.startsWith('s:')) {
-      const m = /^s:(.*)#(\d+)$/.exec(id); const f = m && files.get(m[1]); const s = f?.s?.[+m[2]];
-      return s && { id, type: s[1], name: s[0], description: s[4] || '', path: `${f.p}:${s[2]}` };
+  const M = (n) => n.m || {};
+  const isInt = (v) => Number.isSafeInteger(v);
+  const num = (v) => isInt(v) ? String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',').replace(/^/, v < 0 ? '-' : '') : String(v);
+  /** A parameter record as the map shows it: { v, src, shown, lowerBound?, why? }. */
+  // as the map's cards show it: ? for nothing known, ≥ for a sum with an unknown part
+  const shownOf = (v, lowerBound) => v === null || (lowerBound && v === 0) ? '?' : (lowerBound ? '≥ ' : '') + num(v);
+  const rec = (p) => {
+    const v = p && (isInt(p.v) || p.v === null) ? p.v : null;
+    const out = { v, src: (p && p.src) || 'code', shown: shownOf(v, !!(p && p.lowerBound)) };
+    if (p && p.lowerBound) { out.lowerBound = true; out.why = String(p.why || 'a part is unknown'); }
+    return out;
+  };
+  /** A share in percent with one decimal, from the two integers shown next to it. */
+  const share = (part, whole) => isInt(part) && isInt(whole) && whole > 0 ? (Math.round(part * 1000 / whole) / 10).toFixed(1) + '%' : null;
+  const where = (d) => d && d.file ? d.file + (d.line != null ? ':' + d.line : '') : null;
+  /** What a card adds to its parent's count: a folded run all its copies, a shared module nothing (it counts at its first path). */
+  function contributes(n) {
+    const m = M(n), P = rec(m.params);
+    if (m.alias !== undefined) return { v: 0, shared: true };
+    if (m.fold) {
+      const total = isInt(m.fold.total) ? m.fold.total : isInt(P.v) && isInt(m.fold.n) ? P.v * m.fold.n : null;
+      return { v: total, copies: m.fold.n, perCopy: P.v, lowerBound: !!P.lowerBound };
     }
-    return null;
+    return { v: P.v, lowerBound: !!P.lowerBound };
+  }
+  const nameOf = (n) => {
+    if (n.parent == null) return M(n).cls || n.label;
+    if (M(n).fold && n.parent !== 'root') return n.parent + '.' + n.label;
+    return M(n).fold ? n.label : n.id;
+  };
+
+  function brief(id) {
+    const s = String(id || '');
+    const n = s.startsWith('n:') ? nodes.get(s.slice(2)) : null;
+    return n ? { id: 'n:' + n.id, type: n.kind, name: nameOf(n), class: M(n).cls || '', params: rec(M(n).params).shown + (M(n).fold ? ' ×' + M(n).fold.n : ''), description: n.summary || '' } : null;
   }
   const exists = (id) => !!brief(id);
-  const inside = (x, container) => x === container || (container.startsWith('n:') && owners(x).includes(container.slice(2))) || (container.startsWith('f:') && (x.startsWith('r:') ? 'f:' + routes[+x.slice(2)].f === container : x.startsWith('s:') ? 'f:' + x.slice(2).replace(/#\d+$/, '') === container : false));
-  const ownerItem = (endpoint) => endpoint.startsWith('f:') ? 'n:' + (files.get(endpoint.slice(2))?.n || '') : endpoint;
 
-  /** Accepts an id, or what people naturally pass: a file path, a module id, or "GET /path". */
+  /** Accepts an id, or what people naturally pass: a bare path, "root", a member of a folded run, [[n:id]]. */
   function normId(id) {
-    id = String(id || '').trim().replace(/^\.\//, '').replace(/\\/g, '/');
-    if (brief(id)) return id;
-    if (files.has(id)) return 'f:' + id;
-    if (nodes.has(id)) return 'n:' + id;
-    const m = /^([A-Z]+)\s+(\/\S*)$/i.exec(id);
-    if (m) { const ri = routes.findIndex((r) => r.m === m[1].toUpperCase() && r.p === m[2]); if (ri >= 0) return 'r:' + ri; }
-    return id;
+    let s = String(id ?? '').trim().replace(/^\[\[(.*)\]\]$/, '$1');
+    if (brief(s)) return s;
+    if (s.startsWith('n:')) s = s.slice(2);
+    if (s === '' || s === 'root') return 'n:root';
+    if (nodes.has(s)) return 'n:' + s;
+    // blocks.3.attn: the card of blocks.3 is blocks.0, so its attn is blocks.0.attn
+    const parts = s.split('.');
+    for (let i = parts.length; i > 0; i--) {
+      const head = parts.slice(0, i).join('.');
+      if (foldOf.has(head)) { const t = [foldOf.get(head), ...parts.slice(i)].join('.'); if (nodes.has(t)) return 'n:' + t; }
+    }
+    return 'n:' + s;
   }
+  function need(id) {
+    const nid = normId(id), n = nodes.get(nid.slice(2));
+    if (!n) throw new Error('Unknown id "' + String(id) + '". Use find first; ids look like n:root, n:blocks, n:blocks.0.attn.');
+    return n;
+  }
+  const resolved = (id, n) => { const s = String(id ?? '').trim().replace(/^\[\[(.*)\]\]$/, '$1').replace(/^n:/, ''); return s && s !== n.id && s !== 'root' ? { resolvedFrom: s, note: s + ' is one of the folded copies shown by n:' + n.id } : {}; };
 
-  const FILLER = new Set(['how', 'does', 'do', 'did', 'the', 'a', 'an', 'is', 'are', 'where', 'what', 'which', 'who', 'of', 'to', 'for', 'in', 'on', 'and', 'or', 'we', 'i', 'my', 'our', 'it', 'work', 'works', 'happen', 'happens', 'get', 'gets', 'with']);
+  const argText = (v) => v === null || typeof v !== 'object' ? String(v) : JSON.stringify(v);
+  const FILLER = new Set(['how', 'many', 'much', 'does', 'do', 'the', 'a', 'an', 'is', 'are', 'where', 'what', 'which', 'of', 'to', 'for', 'in', 'on', 'and', 'or', 'it', 'with', 'module', 'modules', 'layer', 'layers', 'params', 'parameters']);
   function find(query, kind, limit = 15) {
     const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
     const terms = words.filter((t) => !FILLER.has(t)).length ? words.filter((t) => !FILLER.has(t)) : words;
     if (!terms.length) return [];
-    const pool = [];
-    if (!kind || kind === 'module') for (const n of G.nodes) pool.push(['n:' + n.id, n.label, n.summary || '', n.id, 4]);
-    if (!kind || kind === 'file') for (const f of G.files) pool.push(['f:' + f.p, f.name, f.d || '', f.p, 3]);
-    if (!kind || kind === 'endpoint') routes.forEach((r, i) => pool.push(['r:' + i, r.name, r.d || '', `${r.m} ${r.p}`, 3]));
-    if (!kind || kind === 'symbol') for (const f of G.files) (f.s || []).forEach((s, i) => pool.push([`s:${f.p}#${i}`, s[0], s[4] || '', f.p, 1]));
-    // everything matching every word; if nothing does, the best partial matches
+    const kinds = new Set(G.nodes.map((n) => n.kind));
     const scored = [];
-    for (const [id, name, desc, p, w] of pool) {
-      const n = name.toLowerCase(), d = desc.toLowerCase(), pp = p.toLowerCase();
+    for (const n of G.nodes) {
+      if (kind && kinds.has(kind) && n.kind !== kind) continue;
+      const m = M(n);
+      const label = String(n.label || '').toLowerCase(), cls = String(m.cls || '').toLowerCase(), title = String(n.title || '').toLowerCase();
+      const pth = n.id.toLowerCase(), desc = (String(n.summary || '') + ' ' + String(n.details || '')).toLowerCase();
+      const args = Object.entries(m.args || {}).map(([k, r]) => k + '=' + argText(r && r.v)).join(' ').toLowerCase();
       let s = 0, hit = 0;
       for (const t of terms) {
-        const sc = n === t ? 30 : n.startsWith(t) ? 20 : n.includes(t) ? 12 : pp.includes(t) ? 7 : d.includes(t) ? 5 : 0;
+        const sc = cls === t || label === t ? 30 : cls.startsWith(t) || label.startsWith(t) ? 20 : cls.includes(t) || label.includes(t) || title.includes(t) ? 12 : pth.includes(t) ? 7 : args.includes(t) ? 6 : desc.includes(t) ? 5 : 0;
         if (sc) { s += sc; hit++; }
       }
-      if (hit) scored.push([hit, s + w * 2 - n.length * 0.02, id]);
+      // shallower cards first: the container before what it holds
+      if (hit) scored.push([hit, s - pth.split('.').length * 0.5, n.id]);
     }
     const best = Math.max(0, ...scored.map((x) => x[0]));
     const floor = best === terms.length ? best : Math.max(1, Math.ceil(terms.length / 2));
     return scored.filter((x) => x[0] >= floor).sort((a, b) => b[0] - a[0] || b[1] - a[1])
-      .slice(0, Math.min(Number(limit) || 15, 40)).map(([, , id]) => brief(id));
+      .slice(0, Math.min(Number(limit) || 15, 40)).map(([, , id]) => brief('n:' + id));
   }
 
-  function connections(id, max = 15) {
-    const out = new Map(), inn = new Map();
-    for (const l of G.links) {
-      const ia = inside(l.a, id), ib = inside(l.b, id);
-      if (ia === ib) continue;
-      const other = ia ? l.b : l.a;
-      const key = (id.startsWith('n:') ? ownerItem(other) : other) + '|' + l.k;
-      const m = ia ? out : inn;
-      const cur = m.get(key) || { id: key.split('|')[0], via: l.k, weight: 0, endpoints: new Set() };
-      cur.weight += l.w;
-      for (const [ri] of l.calls || []) if (ri != null) cur.endpoints.add(ri);
-      m.set(key, cur);
-    }
-    const fmt = (m) => [...m.values()].sort((a, b) => b.weight - a.weight).slice(0, max).map((c) => ({
-      ...brief(c.id), via: c.via, weight: c.weight,
-      ...(c.endpoints.size ? { endpoints: [...c.endpoints].slice(0, 6).map((ri) => `r:${ri} ${routes[ri].m} ${routes[ri].p}`) } : {}),
-    })).filter((x) => x.id);
-    return { dependsOn: fmt(out), usedBy: fmt(inn) };
+  function childList(n) {
+    return (kidsOf.get(n.id) || []).map((k) => {
+      const c = nodes.get(k), x = contributes(c);
+      return { id: 'n:' + k, name: nameOf(c), class: M(c).cls || '', params: x.v, shown: shownOf(x.v, x.lowerBound),
+        ...(x.copies ? { copies: x.copies, perCopy: x.perCopy } : {}), ...(x.lowerBound ? { lowerBound: true } : {}), ...(x.shared ? { shared: 'counted at n:' + M(c).alias } : {}) };
+    });
   }
 
   function show(id) {
-    id = normId(id);
-    const b = brief(id);
-    if (!b) throw new Error(`Unknown id "${id}". Use find first; ids look like n:api, f:src/app.ts, r:12, s:src/app.ts#3.`);
-    const parent = owners(id)[id.startsWith('n:') ? 1 : 0];
-    const res = { ...b, ...(parent ? { partOf: brief('n:' + parent) && { id: 'n:' + parent, name: nodes.get(parent).label } } : {}) };
-    const recent = (G.recent?.items || []).filter((x) => x.id === id);
-    if (recent.length) res.recentWork = recent.map((x) => `${G.recent.tasks[x.task]?.title}: ${x.note}`);
-    if (id.startsWith('n:')) {
-      const n = nodes.get(id.slice(2));
-      if (n.details) res.details = n.details;
-      res.size = { files: n.stats.files, loc: n.stats.loc };
-      res.children = (kidsOf.get(n.id) || []).map((k) => ({ id: 'n:' + k, name: nodes.get(k).label, description: nodes.get(k).summary || '' }));
-      const fl = G.files.filter((f) => owners('f:' + f.p).includes(n.id)).sort((a, z) => z.loc - a.loc);
-      res.files = fl.slice(0, 12).map((f) => ({ id: 'f:' + f.p, name: f.name, description: f.d || '' }));
-      if (fl.length > 12) res.moreFiles = fl.length - 12;
-      res.endpoints = routes.filter((r) => owners('f:' + r.f).includes(n.id)).length;
-      Object.assign(res, connections(id));
-    } else if (id.startsWith('f:')) {
-      const f = files.get(id.slice(2));
-      Object.assign(res, { loc: f.loc, module: { id: 'n:' + f.n, name: nodes.get(f.n)?.label }, ...(f.note ? { note: f.note } : {}) });
-      const rs = routesByFile.get(f.p) || [];
-      if (rs.length) res.endpoints = rs.slice(0, 40).map((ri) => ({ id: 'r:' + ri, method: routes[ri].m, path: routes[ri].p, name: routes[ri].name }));
-      const handlers = new Set(rs.map((ri) => routes[ri].h));
-      const ex = (f.s || []).map((s, i) => [s, i]).filter(([s]) => !handlers.has(s[0]));
-      if (ex.length) res.exports = ex.slice(0, 30).map(([s, i]) => `s:${f.p}#${i} ${s[0]} (${s[1]})`);
-      Object.assign(res, connections(id, 20));
-    } else if (id.startsWith('r:')) {
-      const ri = +id.slice(2), r = routes[ri];
-      Object.assign(res, { method: r.m, routePath: r.p, handler: r.h, line: r.l, file: { id: 'f:' + r.f, name: files.get(r.f)?.name } });
-      const callers = new Map();
-      for (const l of G.links) { const n = (l.calls || []).filter(([x]) => x === ri).length; if (n) callers.set(l.a, (callers.get(l.a) || 0) + n); }
-      res.calledFrom = [...callers.entries()].map(([a, n]) => ({ ...brief(a), calls: n }));
-    } else {
-      const m = /^s:(.*)#(\d+)$/.exec(id); const f = files.get(m[1]); const s = f.s[+m[2]];
-      res.file = { id: 'f:' + f.p, name: f.name };
-      res.importedBy = G.links.filter((l) => l.b === 'f:' + f.p && (l.names || []).some((nm) => nm === s[0] || (nm === 'default' && s[3]))).slice(0, 25).map((l) => brief(l.a));
+    const n = need(id), m = M(n);
+    const res = { ...brief('n:' + n.id), ...resolved(id, n) };
+    if (n.title) res.title = n.title;
+    if (n.details) res.details = n.details;
+    if (n.parent != null) res.partOf = { id: 'n:' + n.parent, name: nameOf(nodes.get(n.parent)) };
+    res.classKind = m.ckind || 'unknown';
+    res.definedAt = where(m.def);
+    if (m.container) res.container = m.container;
+    res.arguments = Object.fromEntries(Object.entries(m.args || {}).map(([k, r]) => [k, { value: r ? r.v : null, src: (r && r.src) || 'code', ...(r && r.at ? { at: r.at } : {}) }]));
+    if (m.argsMore) res.moreArguments = m.argsMore;
+    res.params = rec(m.params);
+    res.ownParams = isInt(m.own) ? m.own : 0;
+    if (m.direct) res.direct = m.direct;
+    res.bytes = { fp32: isInt(m.bytes?.fp32) ? m.bytes.fp32 : null };
+    if (m.fold) { const x = contributes(n); res.fold = { copies: m.fold.n, perCopy: res.params.shown, total: x.v, totalShown: shownOf(x.v, x.lowerBound), members: m.fold.members, ...(m.fold.failing ? { failing: m.fold.failing, failingCount: m.fold.failingCount } : {}), ...(m.fold.notes ? { notes: m.fold.notes } : {}), ...(m.fold.weights ? { weights: m.fold.weights } : {}) }; }
+    if (m.letter) res.letter = m.letter;
+    if (m.pattern) res.pattern = m.pattern;
+    if (m.alias !== undefined) res.alias = { sharesWeightsWith: normId(m.alias), note: 'the same module object as ' + m.alias + ': its parameters are counted once, there' };
+    if (m.tied) res.tied = m.tied;
+    if (m.why) res.unknownBecause = m.why;
+    if (m.incomplete) res.incomplete = 'part of the constructor was skipped by the scan';
+    if (m.notes) res.notes = m.notes;
+    if (m.weights) res.weights = m.weights;
+    if (m.check) res.weightsCheck = m.check;
+    const kids = childList(n);
+    res.children = kids.slice(0, 30);
+    if (kids.length > 30) res.moreChildren = kids.length - 30;
+    return res;
+  }
+
+  /** The exact parameter count of a module and what it is made of, every sum and share worked out here. */
+  function params(id, top = 10) {
+    const n = need(id), m = M(n), P = rec(m.params);
+    const res = { id: 'n:' + n.id, name: nameOf(n), class: m.cls || '', ...resolved(id, n), params: P, ownParams: isInt(m.own) ? m.own : 0, bytes: { fp32: isInt(m.bytes?.fp32) ? m.bytes.fp32 : null } };
+    if (res.bytes.fp32 !== null) res.bytes.fp32Shown = num(res.bytes.fp32) + ' B';
+    if (m.alias !== undefined) {
+      const t = nodes.get(normId(m.alias).slice(2));
+      res.alias = { sharesWeightsWith: normId(m.alias), note: 'This is the same module object as ' + m.alias + '. Its weights are shared: they are counted once, at ' + m.alias + ', and add 0 here.', ...(t ? { paramsThere: rec(M(t).params) } : {}) };
+    }
+    if (m.fold) {
+      const x = contributes(n);
+      res.fold = { copies: m.fold.n, perCopy: P.v, perCopyShown: P.shown, total: x.v, totalShown: shownOf(x.v, x.lowerBound), members: m.fold.members };
+      if (res.bytes.fp32 !== null && isInt(m.fold.n)) { res.fold.bytesFp32Total = res.bytes.fp32 * m.fold.n; res.fold.bytesFp32TotalShown = num(res.fold.bytesFp32Total) + ' B'; }
+      res.fold.note = 'The card stands for ' + m.fold.n + ' equal copies; params and the breakdown below are per copy.';
+    }
+    if (m.weights) res.weights = m.weights;
+    if (m.check) res.weightsCheck = m.check;
+    const kids = childList(n).sort((a, b) => (b.params ?? -1) - (a.params ?? -1));
+    if (kids.length) {
+      const known = kids.filter((k) => k.params !== null);
+      let childrenSum = 0;
+      for (const k of known) childrenSum += k.params;
+      const whole = P.v;
+      for (const k of kids) k.share = share(k.params, whole);
+      const cut = Math.max(1, Math.min(Number(top) || 10, 100));
+      const shownKids = kids.slice(0, cut), rest = kids.slice(cut);
+      res.breakdown = {
+        of: P.shown, ownParams: res.ownParams, ...(res.ownParams ? { ownShare: share(res.ownParams, whole) } : {}),
+        children: shownKids,
+        childrenSum: known.length === kids.length ? childrenSum : null,
+        ...(known.length < kids.length ? { unknownChildren: kids.length - known.length } : {}),
+      };
+      if (rest.length) {
+        let restSum = 0;
+        for (const k of rest) restSum += k.params ?? 0;
+        res.breakdown.more = { count: rest.length, params: restSum, shown: num(restSum), share: share(restSum, whole) };
+      }
+      const sum = res.breakdown.childrenSum === null ? null : res.ownParams + res.breakdown.childrenSum;
+      res.breakdown.ownPlusChildren = sum;
+      res.breakdown.addsUp = sum !== null && sum === whole;
     }
     return res;
   }
 
-  /** Shortest dependency chain from anything inside `from` to anything inside `to`. */
+  function contract() {
+    if (G.contract && typeof G.contract === 'object') return { available: true, ...G.contract };
+    return { available: false, reason: 'The scan found no forward() method on the root model, so the map has no input and output contract.' };
+  }
+
+  /** The way through the module tree from one module to another: up to their common parent, then down. */
   function path(from, to) {
-    from = normId(from); to = normId(to);
-    if (!exists(from) || !exists(to)) throw new Error('Unknown id; use find first.');
-    const adj = new Map();
-    const add = (a, b, l) => { if (!adj.has(a)) adj.set(a, []); adj.get(a).push([b, l]); };
-    for (const l of G.links) add(l.a, l.b, l);
-    const starts = [...new Set([...G.links.map((l) => l.a), ...G.links.map((l) => l.b)])].filter((x) => inside(x, from));
-    const isGoal = (x) => inside(x, to);
-    const prev = new Map(starts.map((s) => [s, null]));
-    const queue = [...starts];
-    let goal = null;
-    while (queue.length && !goal) {
-      const x = queue.shift();
-      for (const [y, l] of adj.get(x) || []) {
-        if (prev.has(y)) continue;
-        prev.set(y, [x, l]);
-        if (isGoal(y)) { goal = y; break; }
-        queue.push(y);
-      }
-    }
-    if (!goal) return { found: false, note: `No chain of imports/calls leads from ${from} to ${to}. Try the reverse direction, or the two may only meet through a shared dependency.` };
+    const a = need(from), b = need(to);
+    const up = (n) => { const out = []; for (let x = n; x; x = x.parent != null ? nodes.get(x.parent) : null) out.push(x.id); return out; };
+    const ua = up(a), ub = up(b), common = ua.find((x) => ub.includes(x));
+    const down = ub.slice(0, ub.indexOf(common)).reverse();
+    const chain = [...ua.slice(0, ua.indexOf(common) + 1), ...down];
     const hops = [];
-    for (let x = goal; prev.get(x); x = prev.get(x)[0]) {
-      const [p, l] = prev.get(x);
-      hops.unshift({ from: brief(p), to: brief(x), via: l.k, ...(l.calls?.length ? { endpoints: l.calls.slice(0, 3).map(([ri]) => ri != null ? `r:${ri} ${routes[ri].m} ${routes[ri].p}` : '').filter(Boolean) } : {}) });
-    }
-    return { found: true, hops: hops.slice(0, 15) };
+    for (let i = 1; i < chain.length; i++) hops.push({ from: brief('n:' + chain[i - 1]), to: brief('n:' + chain[i]), via: i <= ua.indexOf(common) ? 'part of' : 'contains' });
+    return { found: true, common: brief('n:' + common), hops: hops.slice(0, 30) };
   }
 
   function overview() {
+    const root = G.nodes.find((n) => n.parent == null) || G.nodes[0];
+    const kids = childList(root);
+    const P = rec(M(root).params);
+    for (const k of kids) k.share = share(k.params, P.v);
+    const unknown = G.nodes.filter((n) => M(n).why || (M(n).params && M(n).params.lowerBound && !(kidsOf.get(n.id) || []).length)).slice(0, 12).map((n) => ({ id: 'n:' + n.id, class: M(n).cls || '', why: String(M(n).why || M(n).params.why || '') }));
+    const c = contract();
     return {
-      project: G.project.name, summary: G.project.summary || '',
-      systems: G.nodes.filter((n) => !n.parent).map((n) => ({ id: 'n:' + n.id, name: n.label, kind: n.kind, description: n.summary || '', modules: (kidsOf.get(n.id) || []).map((k) => `n:${k} ${nodes.get(k).label}`) })),
-      flows: (G.flows || []).map((f) => ({ title: f.title, steps: f.steps.map((s) => `${s.ref} ${s.note}`) })),
-      counts: { files: G.files.length, endpoints: routes.length },
-      ...(G.recent ? { recentWork: (G.recent.tasks || []).map((t, ti) => ({ title: t.title, request: t.request, summary: t.summary, changed: G.recent.items.filter((x) => x.task === ti).map((x) => `${x.id} ${x.note}`) })) } : {}),
+      project: G.project?.name || '', summary: G.project?.summary || '',
+      model: { id: 'n:' + root.id, class: M(root).cls || '', definedAt: where(M(root).def), params: P },
+      counts: G.meta?.counts || {},
+      parts: kids,
+      ...(unknown.length ? { unknownParts: unknown } : {}),
+      contract: c.available ? { available: true, inputs: (c.inputs || []).map((i) => i && i.name), dims: (c.dims || []).length } : { available: false },
+      ...(G.meta?.weights ? { weights: G.meta.weights } : {}),
+      ...((G.flows || []).length ? { flows: G.flows.map((f) => ({ title: f.title, steps: (f.steps || []).map((s) => s.ref + ' ' + (s.note || '')) })) } : {}),
     };
   }
 
-  return { find, show, path, overview, exists, brief };
+  return { find, show, params, contract, path, overview, exists, brief };
 }
 
 // What an answer looks like, for both engines (JSON Schema).
@@ -181,9 +228,9 @@ const FLOORPLAN_ANSWER_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string', description: 'Short title for the answer view, at most 6 words.' },
-    answer: { type: 'string', description: 'The answer in Markdown, at most ~180 words. Mention map items inline as [[id]].' },
-    items: { type: 'array', description: '3-14 map items most relevant to the answer, most important first.', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string', description: 'Why this item matters here, at most 15 words.' } }, required: ['id', 'note'] } },
-    steps: { type: 'array', description: 'Optional ordered walkthrough when the answer is a sequence (a request path, a data flow). Empty otherwise.', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id', 'note'] } },
+    answer: { type: 'string', description: 'The answer in Markdown, in Korean with the English term next to it, at most ~180 words. Every number copied from a lookup. Mention map items inline as [[id]].' },
+    items: { type: 'array', description: '3-14 map items (modules such as n:blocks or n:blocks.0.attn) most relevant to the answer, most important first.', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string', description: 'Why this module matters here, at most 15 words.' } }, required: ['id', 'note'] } },
+    steps: { type: 'array', description: 'Optional ordered walkthrough when the answer is a sequence (data moving through the modules in forward()). Empty otherwise.', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id', 'note'] } },
     followups: { type: 'array', description: '2-3 short follow-up questions the person might ask next.', items: { type: 'string' } },
   },
   required: ['title', 'answer', 'items'],
@@ -193,68 +240,40 @@ const FLOORPLAN_ANSWER_SCHEMA = {
 const FLOORPLAN_FLOW_SCHEMA = {
   type: 'object',
   properties: {
-    title: { type: 'string', description: 'Short flow title, at most 6 words, e.g. "Checkout to Stripe payment".' },
+    title: { type: 'string', description: 'Short flow title, at most 6 words, e.g. "Encoder to surface decoder".' },
     description: { type: 'string', description: 'One sentence on what the flow shows.' },
-    steps: { type: 'array', description: '3-9 steps in the order things happen, each a map item and what happens there.', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string', description: 'What happens at this step, at most 18 words.' } }, required: ['id', 'note'] } },
+    steps: { type: 'array', description: '3-9 steps in the order forward() runs them, each a module and what happens to the data there.', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string', description: 'What happens at this step, at most 18 words.' } }, required: ['id', 'note'] } },
   },
   required: ['title', 'steps'],
 };
 
-// A requested change to a blueprint: the whole updated plan.json and architecture.json, and what changed
-// (JSON Schema). The documents travel as JSON text so the schema stays the same for every engine.
-const FLOORPLAN_CHANGE_SCHEMA = {
-  type: 'object',
-  properties: {
-    title: { type: 'string', description: 'What changed, 2-6 words, e.g. "Planned out payments".' },
-    summary: { type: 'string', description: 'Markdown, at most ~150 words, plain words: what you added, changed or removed and why, plus any new assumptions or open questions.' },
-    plan: { type: 'string', description: 'The complete updated floorplan/plan.json, as JSON text.' },
-    architecture: { type: 'string', description: 'The complete updated floorplan/architecture.json, as JSON text.' },
-    changes: { type: 'array', description: 'Every new or changed card: a file path, node id or "METHOD /path".', items: { type: 'object', properties: { ref: { type: 'string' }, change: { type: 'string', enum: ['new', 'changed'] }, note: { type: 'string', description: 'How this card serves the request, one plain sentence.' } }, required: ['ref', 'change', 'note'] } },
-    followups: { type: 'array', description: '2-3 short changes the person might ask for next.', items: { type: 'string' } },
-  },
-  required: ['title', 'summary', 'plan', 'architecture', 'changes'],
-};
-
-function floorplanChangeInstructions(G) {
-  const src = G.meta?.blueprint?.source;
-  return [
-    `You change a blueprint: an interactive map of "${G.project.name}", a system that is planned but not built yet. The person looking at it asks for a change, addition or removal ("also plan out payments", "drop the admin page", "staff should sign in with Google"), and you update the plan.`,
-    `Read floorplan/plan.json and floorplan/architecture.json first${src ? `, and ${src} (the PRD it was planned from) when the request touches what the PRD says` : ''}. You can look things up on the map with \`node floorplan/query.mjs find "<words>"\` and \`show <id>\`.`,
-    'plan.json format: { source, stack[], assumptions[], questions[{question, about[]}], files[{path, name, description, screen?, uses[], calls["METHOD /path"], services[node ids], data[node ids]}], endpoints[{method, path, file, name, description, access: public|signed-in|team|webhook|internal, who?, publicBecause?}] }. Every endpoint\'s file is a planned file, every call matches a planned endpoint exactly, and services/data name nodes in architecture.json.',
-    'architecture.json: { project, nodes[{id, label, kind, parent?, summary, paths[globs]}], edges[], flows[{id, title, steps[{node, note}]}], tour[] }. Kinds: ui service worker library feature data config test script infra external. External nodes (outside services, the database) own no files. Every planned file must fall under some node\'s paths, so add or widen globs for new folders. Flow and tour steps point at node ids or planned file paths.',
-    'Change only what the request needs, the way the rest of the plan is written: same stack and conventions, plain language for everyone, real file paths. Keep every other file, endpoint, id and description exactly as it is. If the PRD or plan already decided something, follow it; record a new choice in assumptions and a real open decision in questions. If the request removes something, remove everything that only it used. If it answers one of plan.json\'s questions, remove that question, build the answer into the plan, and record it in assumptions; if it settles who may use an endpoint, set access (and who or publicBecause). Many requests come from the map\'s design review: settle exactly what it names.',
-    'Reply with JSON only: {"title", "summary", "plan", "architecture", "changes", "followups"}. plan and architecture are the complete updated files as JSON text, not just the changed parts. changes lists every new or changed file, endpoint ("METHOD /path") or node id with a note on how it serves the request.',
-    'Do not edit any files yourself: the map server checks your JSON, saves it and redraws the map.',
-  ].join('\n');
-}
-
 function floorplanFlowInstructions(G, engine) {
   return [
-    `You build guided flows for an interactive architecture map of the codebase "${G.project.name}". A flow is an ordered walkthrough: each step is one map item (module n:..., file f:..., endpoint r:..., or export s:...) and a note on what happens there.`,
+    'You build guided flows for an interactive map of the model "' + (G.project?.name || '') + '". A flow is an ordered walkthrough: each step is one map item (a module, id n:<instance path>; the model is n:root) and a note on what happens to the data there.',
     engine === 'cli'
-      ? 'Find the items with `node floorplan/query.mjs find "<words>"`, `show <id>` and `path <fromId> <toId>`; read source files when you need to confirm the order of events.'
-      : 'Find the items with the tools find_items, get_item and dependency_path.',
-    'Trace what the person asks for from its trigger (a user action, webhook, cron job) to its final effect (database write, external call, response).',
-    'Use 3-9 steps. Prefer the most specific item that tells the story (an endpoint over its file, a file over its module), and make consecutive steps things that really call or import each other.',
+      ? 'Find the modules with ' + '\x60node modelmap/query.mjs find "<words>"\x60 and \x60show <id>\x60; read the forward() code of their classes to confirm the order.'
+      : 'Find the modules with the tools find_items, get_item and dependency_path.',
+    'Follow the data through forward(), from the inputs to the outputs, in the order the code calls the modules. Use 3-9 steps.',
+    'Write the notes in Korean with the English term next to it. Mention a shape or a number only when a lookup printed it.',
     'Reply with JSON only: {"title", "description", "steps": [{"id", "note"}]}. Only use ids the map gave you.',
   ].join('\n');
 }
 
 function floorplanAskInstructions(G, engine) {
+  const q = '\x60node modelmap/query.mjs';
   const tools = engine === 'cli'
-    ? `Query the map from the shell: \`node floorplan/query.mjs overview\`, \`node floorplan/query.mjs find "<words>" [--kind module|file|endpoint|symbol]\`, \`node floorplan/query.mjs show <id>\`, \`node floorplan/query.mjs path <fromId> <toId>\`. Every result is JSON with ids. Start with the map; read or grep source files when you need specifics the map does not have.`
-    : `Use the tools find_items, get_item and dependency_path to explore the map. You cannot read source files, so answer from the map's names, descriptions, endpoints and connections, and say so when a question needs the code itself.`;
-  const bp = G.meta?.blueprint;
+    ? 'Look things up from the shell; each prints JSON: ' + q + ' overview\x60, ' + q + ' find "<words>"\x60 (name, class, argument, path), ' + q + ' show <id>\x60 (class, arguments, parameters, children, notes), ' + q + ' params <id> [--top N]\x60 (exact count, per-child breakdown with shares, folded copies, shared weights), ' + q + ' contract\x60 (forward() inputs, outputs, shape symbols). You may Read or Grep the repo\'s source files to explain how something works.'
+    : 'Look things up with the tools find_items and get_item (a module\'s class, arguments, parameter count and children). You cannot read source files; say so when a question needs the code.';
   return [
-    `You answer questions about the codebase "${G.project.name}" for someone exploring an interactive architecture map of it.`,
-    `The map has cards for modules (ids n:...), files (f:<path>), HTTP endpoints (r:<number>) and exported symbols (s:<path>#<number>), each with a human-readable name and description, connected by imports and HTTP calls.`,
+    'You answer questions about the model "' + (G.project?.name || '') + '" for a developer exploring an interactive map of its module tree. Map items are modules, ids n:<instance path>; the model itself is n:root.',
     tools,
-    bp ? `This map is a blueprint: a plan of a system that hasn't been built yet, so its files don't exist.${engine === 'cli' ? ` Instead of source files, read floorplan/plan.json${bp.source ? ` and ${bp.source} (what it was planned from)` : ''} when you need more than the map.` : ''} Answer about what would be built and why, and say plainly when the plan doesn't cover something.` : '',
+    'Numbers: copy every number (parameters, bytes, shares, copies, shapes, dimensions) exactly as a lookup printed it (the shown field). Do no arithmetic yourself: no sums, products or percentages; when you need a total or a share, run the lookup that prints it. Never state a number that no lookup printed. A count with lowerBound is written with ≥ and its reason (why). Name the source tag (code, config, weights, estimate) when it matters.',
+    'What-if questions ("what if dim were 256?"): say that the map does not calculate what-if values yet. Do not invent a formula or a number.',
     'Use a few lookups, not dozens. Then reply with JSON only: {"title", "answer", "items", "steps", "followups"}.',
-    '- answer: Markdown, at most ~180 words, plain and specific. Refer to map items inline as [[id]] (they become clickable).',
-    '- items: the 3-14 cards that best show the answer, most important first, each with a note (at most 15 words) on its role.',
-    '- steps: an ordered walkthrough when the answer is a sequence (a request path, a data flow); otherwise [].',
-    '- followups: 2-3 short follow-up questions.',
+    '- answer: Markdown in Korean, with the English term next to the Korean word, e.g. 잔차 연결(residual connection); at most ~180 words. Refer to map items inline as [[id]], with ids a lookup printed.',
+    '- items: the 3-14 modules that best show the answer, most important first, each with a note (at most 15 words).',
+    '- steps: an ordered walkthrough when the answer is a sequence (data moving through forward()); otherwise [].',
+    '- followups: 2-3 short follow-up questions, in Korean.',
     'Only use ids that the map gave you.',
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 }

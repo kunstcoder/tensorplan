@@ -1,6 +1,7 @@
 // modelmap: the model facts in the details panel. For a module: its parameters and where the number comes from,
 // its size, where its class is defined, its arguments, the members of a folded run, shared weights, the weights
-// file check and the scan's notes. For the overview: the model's total. Talks to the viewer only through
+// file check and the scan's notes. For the overview: the model's total, and the input and output contract of
+// forward() with the dimension table (graph.contract, lib/contract.mjs). Talks to the viewer only through
 // window.Floorplan. Every text here comes from the scanned repo, so all of it goes through SC.h (or SC.hk for ids).
 (() => {
   const SC = window.Floorplan;
@@ -32,6 +33,16 @@ table.mm-tbl .l { color: var(--text-3); font-family: var(--mono); font-size: 10.
 .mm-ok { color: var(--ok); font-weight: 600; } .mm-bad { color: var(--err-text); font-weight: 600; }
 .mm-link { color: var(--text); text-decoration: underline; text-decoration-color: var(--hair-2); text-underline-offset: 3px; cursor: pointer; }
 .mm-link:hover { text-decoration-color: currentColor; }
+.mm-tag.doc { color: var(--ok); } .mm-tag.estimate { box-shadow: none; border: 1px dashed var(--text-4); padding: 2px 6px; color: var(--text-2); }
+.mm-shape { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.mm-unk { color: var(--text-3); font-family: var(--mono); cursor: help; }
+.mm-opt { font-size: 10px; font-weight: 600; color: var(--text-3); margin-left: 4px; font-family: var(--sans); }
+table.mm-tbl td.s { font-family: var(--mono); font-weight: 650; white-space: nowrap; }
+table.mm-tbl td.mm-in { font-family: var(--mono); word-break: normal; overflow-wrap: anywhere; }
+.mm-keys li { display: flex; justify-content: space-between; gap: 8px; }
+.mm-keys li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+table.mm-tbl .l.mm-sans { font-family: var(--sans); word-break: normal; overflow-wrap: anywhere; }
+.mm-legend { color: var(--text-3); font-size: 11.5px; line-height: 1.5; margin-top: 8px; }
 `;
   document.head.appendChild(style);
 
@@ -66,6 +77,11 @@ table.mm-tbl .l { color: var(--text-3); font-family: var(--mono); font-size: 10.
   const node = (id) => (typeof id === 'string' && id.startsWith('n:') ? SC.nodes.get(id.slice(2)) : null);
   /** A link to a module only when the map has it; otherwise the path as plain text. */
   const goLink = (p) => (SC.nodes.has(p) ? '<a class="mm-link mm-mono" data-go="' + hk('n:' + p) + '">' + h(p) + '</a>' : '<span class="mm-mono">' + h(p) + '</span>');
+  const SHAPE_SRC = { doc: 'from the docstring of forward()', estimate: 'estimate: Claude read forward(); not measured' };
+  /** A shape record { v, src, why? } as text with its tag, or "?" with the reason. */
+  const shape = (s) => (!s || s.v === null || s.v === undefined
+    ? '<span class="mm-unk" title="' + h(s?.why || 'not known') + '">?</span>'
+    : '<span class="mm-shape"><span class="mm-mono">' + h(s.v) + '</span><span class="mm-tag ' + (s.src === 'estimate' ? 'estimate' : 'doc') + '" title="' + h(SHAPE_SRC[s.src] || SHAPE_SRC.doc) + '">' + (s.src === 'estimate' ? 'estimate' : 'doc') + '</span></span>');
   const sec = (title, body, extra = '') => '<div class="sec mm-sec"><h3>' + h(title) + (extra ? ' <span class="c">' + extra + '</span>' : '') + '</h3>' + body + '</div>';
 
   // ---------- one module ----------
@@ -101,6 +117,8 @@ table.mm-tbl .l { color: var(--text-3); font-family: var(--mono); font-size: 10.
     top += '<div class="mm-kv">' + kv.map(([k, v]) => '<span>' + k + '</span><span>' + v + '</span>').join('') + '</div>';
     if (m.why) top += '<div class="mm-why">' + h(m.why) + '</div>';
     out.push('<div class="sec mm-sec">' + top + '</div>');
+    // the root is the model: its panel also shows the input and output contract (other modules' panels do not)
+    if (n.parent === null) out.push(contractSections(G.contract));
 
     // the weights file check
     if (m.check) {
@@ -166,6 +184,51 @@ table.mm-tbl .l { color: var(--text-3); font-family: var(--mono); font-size: 10.
     return { html: moduleSections(n), top: true };
   });
 
+  // ---------- the input and output contract (graph.contract) ----------
+  const MAX_KEYS_SHOWN = 10;
+  function contractSections(ct) {
+    if (!ct || typeof ct !== 'object' || !Array.isArray(ct.inputs)) return '';
+    const out = [];
+    const fw = ct.forward || {};
+    const where = fw.file ? '<div class="mm-sub" style="margin:0 0 6px"><span class="mm-mono">' + h(fw.owner ? fw.owner + '.forward()' : 'forward()') + '</span> · <span class="mm-mono">' + h(fw.file) + (fw.line ? ':' + h(fw.line) : '') + '</span></div>' : '';
+    // long snake_case names break after an underscore, not in the middle of a word
+    const wb = (s) => h(s).replace(/_/g, '_<wbr>');
+    const rows = ct.inputs.map((x) => '<tr><td class="mm-in">' + wb(x.name) + (x.optional ? '<span class="mm-opt" title="optional: it has a default, so a caller may leave it out">opt</span>' : '')
+      + '<div class="l">' + (x.type ? h(x.type).replace(/([.|])/g, '<wbr>$1') : '<span title="no annotation">no type</span>') + (x.default !== null && x.default !== undefined ? ' = ' + h(x.default) : '') + '</div>'
+      + (x.doc ? '<div class="l mm-sans">' + h(x.doc) + '</div>' : '') + (x.d ? '<div class="l mm-sans" style="color:var(--text-2)">' + h(x.d) + '</div>' : '') + '</td>'
+      + '<td>' + shape(x.shape) + '</td></tr>').join('');
+    const known = [...ct.inputs, ...(ct.output?.keys || [])].some((x) => x.shape && x.shape.v);
+    out.push(sec('Inputs', where + (rows ? '<table class="mm-tbl"><colgroup><col><col style="width:38%"></colgroup><thead><tr><th>name · type</th><th style="text-align:right">shape</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<div class="mm-sub">forward() takes no inputs besides self.</div>')
+      + '<div class="mm-legend">' + (known ? '<span class="mm-tag doc">doc</span> from the docstring · <span class="mm-tag estimate">estimate</span> Claude read forward() · ' : '') + '? not known: no shape in the docstring' + (known ? '' : ' and no estimate') + '</div>', String(ct.inputs.length)));
+
+    // the output: its type, the keys of a returned dict or the names of a returned tuple
+    const o = ct.output || {};
+    const keys = Array.isArray(o.keys) ? o.keys : [];
+    let body = '<div class="mm-kv" style="margin-top:0"><span>Output</span><span class="mm-mono">' + (o.type ? h(o.type) : '<span class="mm-unk" title="no return annotation">?</span>') + '</span>';
+    if (o.shape && o.shape.v) body += '<span>Shape</span><span>' + shape(o.shape) + '</span>';
+    if (Array.isArray(o.names) && o.names.length && !keys.length) body += '<span>Returns</span><span class="mm-mono">(' + o.names.map(h).join(', ') + ')</span>';
+    body += '</div>';
+    if (o.doc) body += '<div class="mm-sub">' + h(o.doc) + '</div>';
+    if (o.d) body += '<div class="mm-sub">' + h(o.d) + '</div>';
+    if (keys.length) {
+      const more = keys.length - MAX_KEYS_SHOWN + (Number(o.keysMore) || 0);
+      body += '<ul class="mm-list mm-keys">' + keys.slice(0, MAX_KEYS_SHOWN).map((k) => '<li><span>' + wb(k.name) + '</span>' + (k.shape && k.shape.v ? shape(k.shape) : '') + '</li>').join('')
+        + (more > 0 ? '<li class="more">and ' + h(more) + ' more</li>' : '') + '</ul>';
+    }
+    out.push(sec('Output', body, keys.length ? h(keys.length + (Number(o.keysMore) || 0)) + ' keys' : ''));
+
+    // the dimension table: the symbols the shapes use
+    const dims = Array.isArray(ct.dims) ? ct.dims : [];
+    if (dims.length) {
+      const drows = dims.map((d) => '<tr><td class="s">' + h(d.sym) + '</td><td class="n">' + h(d.name)
+        + (d.expr ? '<div class="l">' + h(d.expr) + '</div>' : '') + (d.at ? '<div class="l">' + h(d.at) + '</div>' : '') + (d.why ? '<div class="l mm-sans">' + h(d.why) + '</div>' : '') + '</td>'
+        + '<td class="v">' + (d.value === null || d.value === undefined ? '?' : h(num(d.value))) + '</td><td>' + tag(d.src) + '</td></tr>').join('');
+      out.push(sec('Dimensions', '<table class="mm-tbl"><colgroup><col style="width:40px"><col><col style="width:52px"><col style="width:56px"></colgroup><thead><tr><th>sym</th><th>name · where</th><th>value</th><th style="text-align:right">tag</th></tr></thead><tbody>' + drows + '</tbody></table>'
+        + '<div class="mm-legend">B (batch) and N (tokens) appear only in shapes.</div>', String(dims.length)));
+    }
+    return out.join('');
+  }
+
   // ---------- the overview ----------
   SC.addPanelSection('overview', () => {
     const r = G.nodes.find((x) => x.parent === null);
@@ -191,6 +254,6 @@ table.mm-tbl .l { color: var(--text-3); font-family: var(--mono); font-size: 10.
     const cf = G.meta?.config;
     if (cf && typeof cf === 'object') body += '<span>Config</span><span><span class="mm-mono">' + h(cf.file) + (cf.key ? ' › ' + h(cf.key) : '') + '</span>' + (cf.arg ? ' fills <span class="mm-mono">' + h(cf.arg) + '</span> ' + tag('config') : '') + (cf.note ? '<br><span style="color:var(--warn-text)">' + h(cf.note) + '</span>' : '') + '</span>';
     body += '</div>';
-    return { html: '<div class="sec mm-sec"><h3>Parameters</h3>' + body + '</div>', top: true };
+    return { html: '<div class="sec mm-sec"><h3>Parameters</h3>' + body + '</div>' + contractSections(G.contract), top: true };
   });
 })();

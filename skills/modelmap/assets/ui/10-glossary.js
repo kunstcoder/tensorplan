@@ -1,61 +1,60 @@
-// floorplan glossary: explains the technical words a non-developer meets on the map.
-// The first time a known term appears in a description (details panel, board title area), it gets a
-// dotted underline; hovering or focusing it shows a one-sentence explanation. Off while
+// Derived from floorplan v0.11.0 (MIT): skills/floorplan/assets/ui/10-glossary.js
+// modelmap glossary: explains the ML and map words a developer meets on a model map, in Korean with the
+// English term first. The first time a known term appears in a description (details panel, board title area,
+// tour note), it gets a dotted underline; hovering or focusing it shows a short explanation. Off while
 // "Show technical detail" is on. Talks to the viewer only through window.Floorplan.
 (() => {
   const SC = window.Floorplan;
   if (!SC) return;
 
-  // [display name, plain explanation, aliases...]. Aliases are matched as whole words, ignoring case,
-  // except those marked with a leading "=" (matched exactly, so "REST" doesn't fire on "the rest").
+  // [display name, explanation, aliases...]. Aliases are matched as whole words, ignoring case, except those
+  // marked with a leading "=" (matched exactly, so "D" doesn't fire on "d" and "code" not on "Code"). The
+  // explanations are general: nothing here states a number or a fact about one particular model.
   const TERMS = [
-    ['API', 'The way programs talk to each other: one asks for something (prices, an order) and the other answers.', 'API', 'APIs', 'API client'],
-    ['Endpoint', 'One specific request the app can receive, like "mark this order shipped"; each has its own web address.', 'endpoint', 'endpoints'],
-    ['Webhook', 'A message another service sends your app automatically when something happens there, like "a payment went through".', 'webhook', 'webhooks'],
-    ['Server', 'A computer in the cloud that runs your app\'s behind-the-scenes work and answers requests from the screens.', 'server', 'servers', 'main server'],
-    ['Frontend', 'The part of the app people see and click: the screens, buttons and forms in the browser.', 'frontend', 'front end', 'front-end'],
-    ['Backend', 'The behind-the-scenes part of the app that stores the records, applies the rules and talks to other services.', 'backend', 'back end', 'back-end'],
-    ['Database', 'Where the app keeps its records (products, orders, customers) so nothing is lost when it restarts.', 'database', 'databases', 'DB'],
-    ['Record', 'One saved entry in the database, like a single order or customer; a table is the list of all records of one kind.', 'database record', 'database records', 'database table', 'database tables'],
-    ['Model', 'In code, a model describes how one kind of record (an order, a customer) is stored in the database.', 'model', 'models', 'ORM', 'ORM model', 'ORM models', 'data model'],
-    ['Query', 'A question the app asks the database, like "all orders from today that haven\'t shipped".', 'query', 'queries'],
-    ['Queue', 'A waiting line of tasks; work is dropped in and handled one by one in the background so nothing gets lost.', 'queue', 'queues', 'queued', 'outbox', 'message queue'],
-    ['Background job', 'A task that runs on its own behind the scenes, so people don\'t have to wait for it on screen.', 'background job', 'background jobs', 'background task', 'background tasks', 'worker', 'workers'],
-    ['Scheduled job', 'A task that runs automatically on a timetable, like every hour or every night.', 'cron', 'cron job', 'cron jobs', 'scheduled job', 'scheduled jobs', 'scheduler'],
-    ['Environment variable', 'A setting stored outside the code, such as which database or account to use, so it can differ between test and live.', 'environment variable', 'environment variables', 'env var', 'env vars', '.env'],
-    ['Secret', 'A password or key the app uses to sign in to another service; it must never be shared or put in the code.', 'secret', 'secrets', 'API key', 'API keys', 'credentials'],
-    ['Deploy', 'Putting a new version of the app live so people start using it.', 'deploy', 'deploys', 'deployed', 'deployment', 'deployments'],
-    ['Migration', 'A one-time change to how records are stored, like adding a new field to every order.', 'migration', 'migrations'],
-    ['Cache', 'A saved copy of something kept close by so it loads faster instead of being worked out again.', 'cache', 'cached', 'caching'],
-    ['Sign-in', 'Checking who someone is (usually with a password) before letting them in.', 'auth', 'authentication', 'login', 'log in', 'sign-in', 'sign in'],
-    ['Permissions', 'The rules for who is allowed to do what, like only managers issuing refunds.', 'permissions', 'authorization', 'roles', 'RBAC'],
-    ['Session', 'How the app remembers you are signed in, so you don\'t have to type your password on every screen.', 'session', 'sessions'],
-    ['Token', 'A temporary digital pass the app hands out after sign-in and checks on every request.', 'token', 'tokens', 'bearer token', 'access token'],
-    ['SDK', 'A ready-made kit of code a company provides so apps can talk to its service more easily.', 'SDK', 'SDKs'],
-    ['Repository', 'The folder that holds all of a project\'s code and its full history of changes.', 'repository', 'repositories', 'repo', 'repos'],
-    ['Component', 'A reusable building block of the screens, like a button, a table or a whole product editor.', 'component', 'components'],
-    ['Route', 'A web address the app answers: on the screens it\'s a page, on the server it\'s a kind of request.', 'route', 'routes', 'routing', 'App Router'],
-    ['Request', 'A message asking the server to do or fetch something; the server sends back a response with the result.', 'request', 'requests', 'response', 'responses'],
-    ['JSON', 'A simple text format programs use to send data to each other, like a labelled list.', 'JSON'],
-    ['REST', 'A common style for building APIs, where each web address stands for a kind of thing (orders, products).', '=REST', '=RESTful'],
-    ['HTTP method', 'The kind of request: GET reads something, POST creates, PUT or PATCH changes, DELETE removes.', 'HTTP method', 'HTTP methods', '=GET', '=POST', '=PUT', '=PATCH', '=DELETE'],
-    ['HTTP', 'The language browsers and servers use to talk over the web; HTTPS is the encrypted version.', 'HTTP', 'HTTPS'],
-    ['CDN', 'A network of servers around the world that delivers images and files quickly from somewhere near the visitor.', 'CDN', 'CDNs'],
-    ['Storage bucket', 'Cloud file storage for things like product images, uploads and exports.', 'storage bucket', 'bucket', 'buckets', 'S3', 'GCS', 'Cloud Storage'],
-    ['Pub/Sub', 'Google\'s message service: one part of the app posts an event and others pick it up to handle in the background.', 'Pub/Sub', 'PubSub'],
-    ['MCP', 'A standard way to connect AI assistants (like Claude or ChatGPT) to an app so they can look things up in it.', 'MCP', 'MCP server', 'Model Context Protocol'],
-    ['Next.js', 'A popular toolkit for building websites and web apps with React.', 'Next.js', 'NextJS'],
-    ['React', 'A popular library for building interactive screens out of reusable pieces.', '=React'],
-    ['Flask', 'A Python toolkit for building web servers.', 'Flask'],
-    ['SQLAlchemy', 'A Python toolkit that lets the code read and save database records without writing raw database commands.', 'SQLAlchemy'],
-    ['Postgres', 'A widely used database; RDS and Cloud SQL are Amazon\'s and Google\'s hosted versions of it.', 'Postgres', 'PostgreSQL', 'RDS', 'Cloud SQL'],
-    ['Docker', 'A way to package an app with everything it needs so it runs the same on any computer or cloud.', 'Docker', 'container', 'containers'],
-    ['Cloud Run', 'Google\'s service for running an app\'s servers and background jobs in the cloud without managing machines.', 'Cloud Run'],
-    ['Middleware', 'A check every request passes through on its way in, such as "is this person signed in?".', 'middleware'],
-    ['Blueprint', 'In Flask, a group of related requests bundled together, like all the order requests.', 'blueprint', 'blueprints'],
-    ['Tests', 'Automatic checks that the code still does what it should, run before changes go live.', 'test suite', 'unit test', 'unit tests', 'pytest', 'Vitest'],
-    ['Script', 'A small program run by hand for a one-off job, like fixing or importing data.', 'script', 'scripts'],
-    ['OAuth', 'The standard behind "Sign in with…" buttons: it lets one app use another on your behalf without sharing your password.', 'OAuth'],
+    // sizes and storage
+    ['Parameter count (파라미터 수)', '학습되는 값(weight, bias)의 개수다. 모듈의 수는 그 안 모든 하위 모듈의 합이고, 공유된 가중치는 한 번만 센다.', 'parameter count', 'parameter counts', 'parameters', 'params', '파라미터 수', '파라미터'],
+    ['fp32 / bf16 / fp16', '값 하나를 저장하는 형식이다. fp32 는 4바이트, bf16 과 fp16 은 2바이트라서 같은 모델도 형식에 따라 크기가 두 배 차이 난다.', 'fp32', 'bf16', 'fp16', 'float32', 'bfloat16', 'float16'],
+    ['nn.Module', 'PyTorch 에서 층과 모델의 기본 클래스다. __init__ 에서 하위 모듈과 파라미터를 만들고 forward() 에서 계산한다.', 'nn.Module', 'nn.Modules', '=Module'],
+    ['ModuleList', '하위 모듈을 순서대로 담는 목록이다. 담기만 하고, 어떤 순서로 부를지는 forward() 가 정한다.', 'ModuleList', 'nn.ModuleList'],
+    ['Sequential', '하위 모듈을 담고 forward() 에서 그 순서대로 차례로 통과시키는 컨테이너다.', 'Sequential', 'nn.Sequential'],
+    ['nn.Parameter', '모듈이 직접 갖는 학습 텐서다. 하위 모듈을 거치지 않고 모듈에 바로 붙는다.', 'nn.Parameter', 'nn.Parameters'],
+    ['Buffer (버퍼)', 'register_buffer 로 등록한, 학습하지 않는 텐서다(예: 정규화 통계). state_dict 에 저장되지만 파라미터 수에는 들어가지 않는다.', 'buffer', 'buffers', 'register_buffer', '버퍼'],
+    ['state_dict', '모듈 경로를 키로 텐서를 담은 사전이다(예: blocks.0.attn.qkv.weight). 체크포인트 파일이 이 형식으로 저장된다.', 'state_dict', 'state dict'],
+    ['safetensors', '텐서만 담는 가중치 파일 형식이다. 헤더에 이름·dtype·shape 가 JSON 으로 있어 코드를 실행하지 않고 읽을 수 있다(pickle 과 달리).', 'safetensors', '.safetensors'],
+    ['Weight tying (가중치 공유)', '두 모듈이 같은 가중치 텐서를 쓰는 것이다(예: 입력 임베딩과 출력 층). 파라미터는 한 번만 센다.', 'weight tying', 'tied weights', 'tied weight', 'shared weights', 'tied', '가중치 공유'],
+    // layers and blocks
+    ['LayerNorm', '토큰마다 특징 차원의 평균을 빼고 표준편차로 나눈 뒤, 학습되는 scale 과 bias 를 곱하고 더한다.', 'LayerNorm', 'layer norm', 'layer normalization', 'nn.LayerNorm'],
+    ['RMSNorm', 'LayerNorm 에서 평균 빼기를 생략하고 제곱평균제곱근(RMS)으로만 나누는 정규화다. 보통 bias 가 없다.', 'RMSNorm', 'RMS norm'],
+    ['Pre-norm (사전 정규화)', '정규화를 attention·MLP 앞에 두고, 정규화하지 않은 입력을 잔차로 더하는 블록 배치다. 깊은 모델의 학습이 안정적이다.', 'pre-norm', 'prenorm', 'pre norm', '사전 정규화'],
+    ['Residual connection (잔차 연결)', '하위 층의 출력에 그 층의 입력을 더하는 연결이다(x + f(x)). 그래서 입력과 출력 shape 가 같아야 한다.', 'residual connection', 'residual connections', 'residual', 'skip connection', '잔차 연결', '잔차'],
+    ['Attention (어텐션)', '각 토큰이 query·key 의 유사도로 가중치를 구해 value 들의 가중합을 받는 연산이다. self-attention 은 같은 입력끼리, cross-attention 은 다른 입력을 본다.', 'attention', 'self-attention', 'cross-attention', 'multi-head attention', '어텐션'],
+    ['head_dim (d_h)', '어텐션 헤드 하나의 차원이다. 보통 dim // num_heads 로 정해진다.', 'head_dim', 'head dim', '=d_h'],
+    ['num_heads (H)', '어텐션을 나란히 몇 개의 헤드로 나눠 계산하는지다. 각 헤드는 head_dim 차원을 본다.', 'num_heads', 'n_heads', 'num heads', 'heads'],
+    ['GQA', 'Grouped-query attention. query 헤드 여러 개가 key·value 헤드 하나를 나눠 쓴다. KV 파라미터와 캐시가 줄어든다.', '=GQA', 'grouped-query attention', 'grouped query attention', 'num_key_value_heads'],
+    ['MQA', 'Multi-query attention. 모든 query 헤드가 key·value 헤드 하나를 공유한다. GQA 에서 KV 헤드가 1개인 경우다.', '=MQA', 'multi-query attention', 'multi query attention'],
+    ['RoPE', 'Rotary position embedding. query 와 key 를 위치에 비례한 각도로 회전시켜 상대 위치를 넣는다. 학습 파라미터가 없다.', '=RoPE', 'rotary embedding', 'rotary position embedding', 'rotary'],
+    ['MLP / feed-forward', '토큰마다 따로 적용하는 두 개(또는 세 개)의 Linear 와 그 사이 활성화 함수다. 보통 중간 차원을 dim 의 몇 배로 넓힌다.', 'MLP', 'Mlp', 'feed-forward', 'feedforward', 'FFN', '피드포워드'],
+    ['GELU', 'Gaussian error linear unit. 0 근처에서 부드러운 활성화 함수로 트랜스포머 MLP 에 흔히 쓴다. 파라미터가 없다.', '=GELU', 'nn.GELU', 'gelu'],
+    ['SiLU', 'x · sigmoid(x) 활성화 함수다(Swish). 파라미터가 없다.', '=SiLU', 'nn.SiLU', 'swish', 'silu'],
+    ['SwiGLU', 'SiLU 를 게이트로 쓰는 MLP 다: 두 Linear 의 출력을 SiLU(a) · b 로 곱한 뒤 세 번째 Linear 로 줄인다. 그래서 Linear 가 세 개다.', '=SwiGLU', 'swiglu'],
+    ['Embedding (임베딩)', '정수 id 나 좌표 같은 입력을 dim 차원 벡터로 바꾸는 층이다. nn.Embedding 은 크기가 어휘 수 × dim 인 표다.', 'embedding', 'embeddings', 'nn.Embedding', 'embed', '임베딩'],
+    ['Supernode (슈퍼노드)', '점 구름(point cloud)에서 고른 대표 점이다. 주변 점들의 정보를 모아 이 점의 특징으로 만들어, 이후 계산을 작은 집합에서 한다.', 'supernode', 'supernodes', 'supernode pooling', '슈퍼노드'],
+    // dimension symbols
+    ['D', '모델 차원(hidden dimension). 토큰 하나를 나타내는 벡터의 길이다. 실제 값은 차원 표(dimensions)에 있다.', '=D'],
+    ['H', '어텐션 헤드 수(num_heads).', '=H'],
+    ['d_h', '헤드 하나의 차원(head_dim). 보통 D / H 다.', '=d_h'],
+    ['B', '배치 크기(batch size). 한 번에 함께 계산하는 샘플 수다.', '=B'],
+    ['N', '토큰(또는 점) 개수. 샘플마다 다를 수 있다.', '=N'],
+    // map words
+    ['Source tag (출처 태그)', '숫자가 어디서 왔는지 보여 주는 표시다: code, config, weights, run, estimate. 합계의 태그는 그 부분들 중 가장 약한 것이다(code < config < weights < run).', 'source tag', 'source tags', '출처 태그'],
+    ['code', '출처 태그: 코드를 실행하지 않고 읽어서 계산한 값이다.', '=code'],
+    ['config', '출처 태그: 설정 파일(JSON 또는 YAML)에서 읽은 값이다.', '=config'],
+    ['weights', '출처 태그: 가중치 파일(safetensors) 헤더의 shape 에서 센 값이다.', '=weights'],
+    ['run', '출처 태그: 모델을 실제로 실행해 잰 값이다. 런타임 추적은 v1 기능이라 지금은 쓰이지 않는다.', '=run'],
+    ['estimate', '출처 태그: Claude 가 forward() 코드를 읽고 쓴 추정이다. 코드나 파일로 확인된 값이 아니다.', '=estimate', '추정'],
+    ['Lower bound (≥, 하한)', '합계에 스캔이 모르는 부분이 있다는 표시다. 실제 값은 이 숫자 이상이고, 모르는 이유는 상세 패널에 있다.', 'lower bound', 'lower bounds', '하한'],
+    ['Folded block (×N)', '클래스와 생성 인자가 모두 같은 형제 모듈을 카드 하나로 접은 것이다. 카드의 숫자는 한 개 분량이고, ×N 은 반복 횟수다.', 'folded block', 'folded blocks', 'folded', '접힌 블록', '반복 블록'],
+    ['Alias (shared)', '같은 모듈 객체가 두 경로에 붙은 경우다. 두 번째 경로는 shared 로 표시되고 파라미터는 첫 경로에서 한 번만 센다.', '=alias', 'shared module', 'shared modules', '공유 모듈'],
   ];
 
   const exact = new Map(), loose = new Map(), alts = [];
@@ -188,6 +187,9 @@
   document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && current) hide(true); });
   document.addEventListener('scroll', () => { if (current) hide(true); }, true);
   addEventListener('resize', () => { if (current) hide(true); });
+
+  // modelmap: other features (the tour) mark up their own text the same way
+  window.FloorplanGlossary = Object.freeze({ annotate: (el) => { if (el) annotate(el.parentElement || el, [el]); } });
 
   // initial pass, in case the first render/panel happened before this script ran
   if (document.readyState !== 'loading') queueMicrotask(() => { doPanel(); doContext(); });

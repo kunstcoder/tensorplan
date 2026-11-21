@@ -119,7 +119,6 @@ export const SPAWNS = {
   'skills/modelmap/assets/serve.mjs': {
     "process.platform === 'win32' ? 'where' : 'which'": { programs: ['where', 'which'] },
     'cli.cmd': { programs: ['claude', 'codex', 'node'], backing: [/find: \(\) => resolveCli\(given\('claude'\)/, /find: \(\) => resolveCli\(given\('codex'\)/, /return \{ cmd: process\.execPath, args: \[c\], path: c \}/] },
-    'process.execPath': { programs: ['node'] },
     'opener[0]': { programs: ['cmd', 'open', 'xdg-open'], backing: [OPENERS] },
   },
   'skills/modelmap/scripts/scan.mjs': {

@@ -25,12 +25,18 @@ Every value the scan read is a record `{ v, at?, src? }`: `at` is `file:line` wh
 ## scan.json
 
 ```
-{ version, python, errors[], stats, candidates[], rootClass, root: Node, forward?, resolution, meta,
+{ version, python, errors[], stats, candidates[], rootClass, root: Node, forward?, dims?, resolution, meta,
   weights?, config? }
 ```
 
 - `candidates`: the classes that could be the model, `{ name, file, line, hasForward, used, score }`.
-- `forward`: the signature of the root's `forward`: `{ file, line, owner, params: [{ name, annotation, default }], returns, doc }`.
+- `forward`: the signature of the root's `forward`: `{ file, line, end?, owner, params: [{ name, annotation, default, kwonly?, optional, nullable, docText?, shapeHint? }], returns, doc, output }`. Read from the text of the method, never run.
+  - `end`: the last line of the method. `doc`: the docstring, first 600 characters.
+  - `optional`: the parameter has a default value (any default), so a caller may leave it out. Nothing else makes it optional.
+  - `nullable`: the annotation allows None (`X | None`, `None | X`, `Optional[X]`, `Union[..., None]`, also as a string annotation). A required parameter typed `X | None` is nullable but not optional (AB-UPT's `geometry_batch_idx`: the caller must pass it, possibly as None). No annotation: nullable is false.
+  - `docText`: the argument's entry in the docstring (Google style `Args:` with `name (type): text` and indented continuation lines, or simple NumPy style `Parameters` with dashes), at most 400 characters. `shapeHint`: the first dimension list in that entry, as words: `shape (batch_size, seq_len, dim)`, `(B, N, D)`, `[batch, tokens, 3]` give `["batch_size", "seq_len", "dim"]` and so on. Without the word "shape" a list needs two items; lists with type words (Tensor, optional, int, default, ...) are not shapes.
+  - `output`: `{ keys[], keysMore?, names?, docText?, shapeHint?, keyDocs?, keyShapes? }`. `keys`: the string keys of the returned dict in the order they first appear in the body (`outputs["a"] = ...` where `outputs` is a local assigned `{}`, a dict literal or `dict()` and returned; `outputs.update(a=...)`, `setdefault`; `return {"a": ...}`, `return dict(a=...)`), duplicates dropped, at most 64 (`keysMore` counts the rest); nested functions do not count. `names`: the names of the first `return a, b` whose elements are plain names. `docText`: the `Returns:` text; `shapeHint`: a dimension list on its first line; `keyDocs`, `keyShapes`: `key: text` lines of the Returns text for keys found in the body.
+- `dims`: where the scan saw a name of the dimension table (`lib/contract.mjs`, passed as `dimNames`): `{ args[], attrs[], floordiv[], assigned[] }`. `args`: the root's arguments with such a name, and the fields of a config object given to the root (`via`: the argument), as value records with `name`. `attrs`: module attributes with such a name and an integer value, from the first instance in tree order: `{ name, cls, path, v, at, src?, expr?, set? }` (`at`: the assignment line, or the config line when the value came from a config, then `set` is the assignment line; `expr`: the assigned expression, at most 80 characters). `floordiv`: floor divisions of two such names anywhere in the repo, `{ a, b, at }` (at most 20). `assigned`: assignments to an attribute `head_dim` or `dim_head`, `{ name, at }`.
 - `resolution`: counts of the tree (`modules`, `shared`, `reasons[]` of unknown parts).
 - `meta`: `{ generatedAt, root, files, via, truncated }`.
 - `weights?` (from `--weights`): `{ files[], tensors, totalParams, bytes, unmatchedKeys, unmatchedSample[<=5] }`.
@@ -79,11 +85,27 @@ Every `*.json` file in `modelmap/descriptions/` is read, in file-name order; for
 }
 ```
 
-- Only the keys `classes` and `modules`; class entries only `name`, `d`, `details`; module entries only `d`. All values are strings.
+- Only the keys `classes`, `modules` and `contract`; class entries only `name`, `d`, `details`; module entries only `d`. All values are strings.
 - Caps: `name` 80, `d` 400, `details` 2000 characters. No control characters; line breaks only in `details`.
 - The summary of a module is `modules[path].d`, else `classes[cls].d`, else `""`.
 - `describe.mjs --check` fails (exit 1) on invalid JSON or a wrong shape, warns about class names and paths the scan does not know, and lists repo classes without a description.
 - How to write them: [writing-descriptions.md](writing-descriptions.md).
+
+### The `contract` block (optional): estimated shapes
+
+```json
+{
+  "contract": {
+    "inputs": { "<forward() argument name>": { "shape": "[B, N, 3]", "d": "<text>" } },
+    "output": { "d": "<text>", "shape": "[B, N, D]", "keys": { "<returned dict key>": { "shape": "[B, N, 1]", "d": "<text>" } } }
+  }
+}
+```
+
+- Write a shape only when the code makes it clear; otherwise leave it out. Never write a number that is not in the dims table or the code.
+- A shape: at most 40 characters, a bracketed list (brackets may nest) of the symbols of the dims table, `B` (batch), `N` (tokens), `B` or `N` with a subscript (`N_s`), integers and `...`. `d`: at most 400 characters, no control characters.
+- Files merge field by field; a later file wins. A shape from here is shown with the tag `estimate`; it fills an unknown shape and never replaces a shape from the docstring.
+- `describe.mjs --check` fails on a bad shape, an unknown key, a `d` over 400 characters or a control character, and warns about argument and key names that forward() does not have. `build.mjs` drops what does not pass and prints a NOTE for each.
 
 ## graph.json
 
@@ -91,10 +113,31 @@ It keeps floorplan's top-level shape, so the page keeps working:
 
 ```
 { schema: "modelmap/graph@1",
-  meta: { generatedAt, rootName, root, agent: "claude", counts: { modules, params, unknownParts } },
+  meta: { generatedAt, rootName, root, agent: "claude", counts: { modules, params, unknownParts, contractInputs } },
   project: { name, summary },
-  nodes: GraphNode[], files: [], routes: [], links: [], flows: [], tour: [] }
+  nodes: GraphNode[], files: [], routes: [], links: [], flows: [], tour: [], contract? }
 ```
+
+`meta.counts.contractInputs`: the number of inputs of the root's forward(), 0 when there is no contract.
+
+### contract
+
+The input and output contract of the root's `forward()` (`lib/contract.mjs`). Absent when the scan found no `forward`.
+
+```
+contract: {
+  forward: { file, line, owner },
+  inputs: [ { name, type: string|null, default: string|null, optional: boolean, nullable: boolean, doc: string|null, shape: Shape, d? } ],
+  output: { type: string|null, doc: string|null, keys: [ { name, shape?: Shape, d? } ], keysMore?, names?: string[], shape?: Shape, d? },
+  dims: [ { sym, name, value: number|null, src: "code"|"config", at?: "file:line", expr?, why? } ]
+}
+Shape: { v: string|null, src: "doc"|"estimate", why? }
+```
+
+- `type`, `default`: the annotation and the default as written in the code. `optional` (has a default) and `nullable` (the type allows None) as in scan.json; the page marks only `optional` ("opt"). `doc`: the docstring entry of the argument (or the Returns text), cut at 200 characters. `d`: an estimate's text, cut at 400. Caps: name 80, type 120, default 80. Every string is repo text or Claude's text: data, escaped by the page.
+- A shape string uses symbols from `dims`, `B`, `N` (with subscripts), integers, commas and brackets only: `"[B, N, 3]"`. Unknown is `v: null` (the page shows `?` and `why`), never `"?"`. `src: "doc"`: from the docstring of forward (words mapped to symbols: batch, batch_size, bs, b → B; seq, seqlen, seq_len, sequence_length, num_tokens, tokens, n, length → N; the names of the table → their symbol; a word that maps to nothing leaves the shape unknown). `src: "estimate"`: Claude wrote it from reading forward, in descriptions/*.json.
+- `dims`: the FIXED table, by argument or attribute name: dim, hidden_dim, hidden_size, d_model, embed_dim, n_embd → `D`; num_heads, n_head, n_heads, heads → `H`; head_dim, dim_head → `d_h`; depth, n_layer, num_layers, num_blocks → `L`; vocab_size → `V`; block_size, max_seq_len, max_len → `T`; num_classes → `C`; in_channels → `C_in`; patch_size → `P`; image_size → `S`. An entry exists only when the root's arguments (or the fields of its config) or a module attribute have that name and a number; root arguments come first, then attributes in tree order. Other names for the same symbol with the same value are listed in `expr` (`"also: hidden_dim"`), other values in `why`. An attribute's `expr` is the expression assigned (`"dim // num_heads"`).
+- Derived `d_h`: `D // H` only when no head_dim value was found, `D` and `H` exist, and the code divides a D name by an H name (`floordiv`) or assigns an attribute `head_dim`; `name` is that attribute or the division, `expr` the division, `at` where the code does it. No other dimension is computed.
 
 ### GraphNode
 

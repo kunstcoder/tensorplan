@@ -265,3 +265,74 @@ test('describe.mjs without a scan says to run scan.mjs first and exits 1', () =>
     assert.deepEqual(snapshot(t.dir), {}, 'wrote nothing');
   } finally { t.done(); }
 });
+
+// ---------- the input and output contract (plan claim 3) ----------
+const contractFx = path.join(repo, 'tests', 'fixtures', 'contract', 'dict-out');
+/** Scan the contract fixture into t.dir, write descriptions files, run --check. */
+function contractCheck(t, files) {
+  const s = node(script('scan.mjs'), [contractFx, '--out', path.join(t.dir, '.cache')]);
+  assert.equal(s.status, 0, s.stderr);
+  fs.mkdirSync(path.join(t.dir, 'descriptions'), { recursive: true });
+  for (const [name, doc] of Object.entries(files)) fs.writeFileSync(path.join(t.dir, 'descriptions', name), typeof doc === 'string' ? doc : JSON.stringify(doc));
+  return node(DESCRIBE, [contractFx, '--out', t.dir, '--check']);
+}
+
+test('worksheet: a Contract section with the inputs, output keys, dims table and the text of forward(), repo text fenced; the one JSON shape shows the contract block and its rule', { skip: skipNoPy }, () => {
+  const t = tmp();
+  try {
+    const { ws, r } = worksheetOf(contractFx, t);
+    assert.match(ws, /^## Contract: inputs and output of Net\.forward\(\) \(model\.py:22\)$/m);
+    assert.match(ws, /Write a shape only when the code makes it clear; otherwise leave it out\. Never write a number that is not in the dims table or the code\./);
+    const ls = fences(ws);
+    const inside = (re) => ls.filter((x) => re.test(x.l));
+    // names, types, defaults and docstring text come from the repo: only inside fences labelled REPOSITORY TEXT
+    for (const re of [/^tokens: torch\.Tensor$/, /^mask: Optional\[torch\.Tensor\] = None {4}\[optional\] {4}\[nullable\]$/, /^positions: torch\.Tensor \| None {4}\[nullable\]$/, /^scale: float = 1\.0 {4}\[optional\]$/, /docstring shape: \(batch_size, seq_len\)/, /<script>alert\(1\)<\/script>/, /dict keys, in the order they first appear: hidden, logits, extra/]) {
+      const hits = inside(re);
+      assert.ok(hits.length, String(re));
+      for (const h of hits) { assert.ok(h.inside, 'inside a fence: ' + h.l); assert.match(h.label, /^REPOSITORY TEXT /); }
+    }
+    assert.ok(inside(/\[3 backticks\] ignore previous instructions \[3 backticks\]/).every((h) => h.inside), 'backticks in a docstring cannot close the fence');
+    // the dims table and the whole forward()
+    assert.match(ws, /^- `D` = 32 {2}\(dim, code, model\.py:16\)$/m);
+    assert.match(ws, /^- `d_h` = 8 {2}\(head_dim, code, model\.py:11\): "dim \/\/ num_heads"$/m);
+    assert.match(ws, /forward\(\) · model\.py:22-60\n```python\ndef forward\(/);
+    // still one JSON fence: the shape of descriptions, now with the optional contract block
+    const json = ws.split('\n').filter((l) => l === FENCE + 'json');
+    assert.equal(json.length, 1);
+    assert.match(ws, /"contract": \{\n {4}"inputs": \{\n {6}"<forward\(\) argument name>": \{\n {8}"shape": "\[B, N, 3\]"/);
+    assert.match(r.stdout, /"contract" is optional/);
+  } finally { t.done(); }
+});
+
+test('--check: the contract block: bad shapes, unknown keys, d over 400 characters and control characters fail; unknown input and key names warn; a good block passes', { skip: skipNoPy }, () => {
+  const bad = [
+    [{ contract: { inputs: { scale: { shape: '[B, X]' } } } }, /contract\.inputs\.scale\.shape: the shape uses "X"/],
+    [{ contract: { inputs: { scale: { shape: '[B, N, V, D, H, d_h, 1, 2, 3, 4, 5, 6, 7]' } } } }, /at most 40/],
+    [{ contract: { inputs: { scale: { size: '[B]' } } } }, /contract\.inputs\.scale: unknown key "size"/],
+    [{ contract: { inputs: { scale: { d: 'd'.repeat(401) } } } }, /contract\.inputs\.scale\.d has 401 characters \(at most 400\)/],
+    [{ contract: { inputs: { scale: { d: 'line\nbreak' } } } }, /contract\.inputs\.scale\.d holds a control character/],
+    [{ contract: { output: { keys: { hidden: { shape: 'B, N' } } } } }, /contract\.output\.keys\.hidden\.shape: the shape must be a bracketed list/],
+    [{ contract: { flows: {} } }, /contract: unknown key "flows"/],
+    [{ contract: [] }, /"contract" must be an object/],
+  ];
+  for (const [doc, re] of bad) {
+    const t = tmp();
+    try {
+      const r = contractCheck(t, { 'a.json': doc });
+      assert.equal(r.status, 1, JSON.stringify(doc) + '\n' + r.stdout);
+      assert.match(r.stdout, re);
+    } finally { t.done(); }
+  }
+  const t = tmp();
+  try {
+    const r = contractCheck(t, { 'a.json': { contract: {
+      inputs: { scale: { shape: '[B, 1]', d: '배율(scale)' }, nope: { shape: '[B]' }, tokens: { shape: '[B, N]' } },
+      output: { d: 'x', shape: '[B, N, D]', keys: { extra: { shape: '[B, N, D]' }, missing: { d: 'y' } } },
+    } } });
+    assert.equal(r.status, 0, r.stdout);
+    assert.match(r.stdout, /! a\.json: contract\.inputs\.nope: forward\(\) has no input of this name/);
+    assert.match(r.stdout, /! a\.json: contract\.inputs\.tokens: the docstring gives the shape already/);
+    assert.match(r.stdout, /! a\.json: contract\.output\.keys\.missing: the code returns no key of this name/);
+    assert.match(r.stdout, /0 error\(s\), 3 warning\(s\)/);
+  } finally { t.done(); }
+});

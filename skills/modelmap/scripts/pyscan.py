@@ -18,6 +18,7 @@
 import ast
 import json
 import os
+import re
 import sys
 
 if sys.version_info < (3, 9):
@@ -263,6 +264,7 @@ class Mod:
         self.container = None      # list | seq | dict
         self.base_layer = None     # a class that extends a torch layer: (name, pos, kw)
         self.tied = {}             # weight or bias -> the Mod whose weight this layer shares
+        self.attr_at = {}          # attributes with a dimension name: name -> (file:line of the assignment, its text)
         self.why = None
         self.fq = None
 
@@ -378,6 +380,7 @@ class Interp:
         self.steps = 0
         self.warnings = []
         self._mro = {}
+        self.dim_names = frozenset()  # attribute names whose assignment line and text are kept (job "dimNames")
 
     # ---------- index ----------
     def add(self, path, text):
@@ -1256,6 +1259,9 @@ class Interp:
 
     def set_attr(self, mod, name, v, rhs, fr):
         mod.attrs[name] = v
+        if name in self.dim_names and name not in mod.attr_at:
+            line = getattr(rhs, "lineno", None)
+            mod.attr_at[name] = (fr.fi.path + ":" + str(line) if line else None, ast.unparse(rhs)[:80] if rhs is not None else None)
         if isinstance(v, Mod):
             mod.set_child(name, v)
         elif isinstance(v, ParamV):
@@ -1387,6 +1393,197 @@ def fix_tied(j, seen):
         fix_tied(c, seen)
 
 
+# ---------- the input and output contract of forward (read from the text; never run) ----------
+DOC_PARAMS = ("args", "arguments", "parameters", "params", "keyword args", "keyword arguments", "inputs")
+DOC_RETURNS = ("returns", "return", "yields", "outputs")
+DOC_OTHER = ("raises", "examples", "example", "note", "notes", "attributes", "see also", "references", "warning",
+             "warnings", "todo", "shape", "shapes")
+# a dimension list: "shape (B, N, D)", "(batch, seq_len, dim)", "[B, N, 3]"; without the word shape it needs 2 items
+SHAPE_RE = re.compile(r"(shape\s*[:=]?\s*\x60?\s*)?([\(\[])\s*(\w+|\.\.\.)((?:\s*,\s*(?:\w+|\.\.\.))*)\s*,?\s*([\)\]])", re.I)
+NOT_DIMS = {"tensor", "optional", "int", "float", "str", "bool", "list", "dict", "tuple", "none", "default", "or",
+            "and", "the", "of", "a", "an", "torch", "array", "ndarray", "longtensor", "floattensor", "type", "e", "g", "ie", "eg"}
+MAX_DOC_TEXT = 400
+MAX_KEYS = 64
+
+
+def shape_hint(text):
+    """The first dimension list in text as a list of words, or None. Only words, integers and "..."."""
+    for m in SHAPE_RE.finditer(text or ""):
+        if (m.group(2) == "(") != (m.group(5) == ")"):
+            continue
+        words = [m.group(3)] + [w.strip() for w in m.group(4).split(",") if w.strip()]
+        if not m.group(1) and len(words) < 2:
+            continue
+        if any(w.lower() in NOT_DIMS for w in words):
+            continue
+        return words[:8]
+    return None
+
+
+def doc_sections(doc):
+    """{section name: [(indent, text)]} of a Google style ("Args:") or simple NumPy style ("Parameters" + dashes)
+    docstring. Section names are lower case."""
+    lines = (doc or "").split("\n")
+    known = DOC_PARAMS + DOC_RETURNS + DOC_OTHER
+    out, cur, base, numpy = {}, None, 0, False
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        s = ln.strip()
+        ind = len(ln) - len(ln.lstrip())
+        low = s[:-1].strip().lower() if s.endswith(":") else s.lower()
+        under = i + 1 < len(lines) and len(lines[i + 1].strip()) >= 3 and set(lines[i + 1].strip()) == {"-"}
+        if low in known and (s.endswith(":") or under):
+            cur, base, numpy = low, ind, under and not s.endswith(":")
+            out.setdefault(cur, [])
+            i += 2 if numpy else 1
+            continue
+        if cur is not None and s:
+            if ind < base or (ind == base and not numpy):
+                cur = None
+            else:
+                out[cur].append((ind, s))
+        i += 1
+    return out
+
+
+ENTRY_RE = re.compile(r"^\*{0,2}([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*:\s*(.*)$")
+NUMPY_ENTRY_RE = re.compile(r"^\*{0,2}([A-Za-z_]\w*)\s*(?::\s*(.*))?$")
+
+
+def doc_entries(items):
+    """{name: text} from the lines of an Args or Parameters section: "name (type): text" or "name : type" with the
+    text on the lines below, more indented. Continuation lines are joined with spaces."""
+    out, cur, ind0 = {}, None, None
+    for ind, s in items:
+        if ind0 is None:
+            ind0 = ind
+        if ind == ind0:
+            m = ENTRY_RE.match(s)
+            if m:
+                cur = m.group(1)
+                out[cur] = m.group(3).strip()
+                continue
+            m = NUMPY_ENTRY_RE.match(s)
+            if m:
+                cur = m.group(1)
+                out[cur] = ""
+                continue
+            cur = None
+        elif cur is not None:
+            out[cur] = (out[cur] + " " + s).strip()
+    return {k: v[:MAX_DOC_TEXT] for k, v in out.items()}
+
+
+def ann_has_none(a, depth=0):
+    """Whether an annotation allows None: X | None, None | X, Optional[X], Union[X, None] (also as a string annotation)."""
+    if a is None or depth > 6:
+        return False
+    if isinstance(a, ast.Constant):
+        if a.value is None:
+            return True
+        if isinstance(a.value, str) and len(a.value) < 200:
+            try:
+                return ann_has_none(ast.parse(a.value, mode="eval").body, depth + 1)
+            except SyntaxError:
+                return False
+        return False
+    if isinstance(a, ast.BinOp) and isinstance(a.op, ast.BitOr):
+        return ann_has_none(a.left, depth + 1) or ann_has_none(a.right, depth + 1)
+    if isinstance(a, ast.Subscript):
+        nm = last_name(a.value)
+        if nm == "Optional":
+            return True
+        if nm == "Union":
+            elts = a.slice.elts if isinstance(a.slice, ast.Tuple) else [a.slice]
+            return any(ann_has_none(e, depth + 1) for e in elts)
+    return False
+
+
+def own_nodes(fn):
+    """The nodes of a function body in source order, leaving out nested functions, classes and lambdas."""
+    out = []
+
+    def go(n):
+        for c in ast.iter_child_nodes(n):
+            if isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            out.append(c)
+            go(c)
+    for st in fn.body:
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        out.append(st)
+        go(st)
+    return out
+
+
+def str_key(n):
+    return n.value if isinstance(n, ast.Constant) and isinstance(n.value, str) else None
+
+
+def output_of(fn):
+    """What forward returns, read from its body as text: the keys of a returned dict in the order they first appear
+    (outputs["a"] = ..., outputs = {"a": ...}, return {"a": ...}, return dict(a=...)) and the names of a returned tuple
+    of plain names (return a, b)."""
+    nodes = own_nodes(fn)
+    rets = [n for n in nodes if isinstance(n, ast.Return) and n.value is not None]
+    dict_locals = set()
+    for n in nodes:
+        if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value is not None:
+            v = n.value
+            if isinstance(v, ast.Dict) or (isinstance(v, ast.Call) and last_name(v.func) == "dict" and isinstance(v.func, ast.Name)):
+                for t in (n.targets if isinstance(n, ast.Assign) else [n.target]):
+                    if isinstance(t, ast.Name):
+                        dict_locals.add(t.id)
+    returned = {r.value.id for r in rets if isinstance(r.value, ast.Name)} & dict_locals
+    seen = []  # (line, col, key)
+
+    def add(node, key):
+        if key is not None:
+            seen.append((getattr(node, "lineno", 0), getattr(node, "col_offset", 0), key))
+
+    def dict_keys(v):
+        if isinstance(v, ast.Dict):
+            for k in v.keys:
+                if k is not None:
+                    add(k, str_key(k))
+        elif isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "dict":
+            for kw in v.keywords:
+                if kw.arg:
+                    add(kw.value, kw.arg)
+    for n in nodes:
+        targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, (ast.AugAssign, ast.AnnAssign)) else []
+        for t in targets:
+            if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id in returned:
+                add(t, str_key(t.slice))
+            elif isinstance(t, ast.Name) and t.id in returned and getattr(n, "value", None) is not None:
+                dict_keys(n.value)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and n.func.value.id in returned:
+            if n.func.attr == "update":
+                for a in n.args:
+                    dict_keys(a)
+                for kw in n.keywords:
+                    if kw.arg:
+                        add(kw.value, kw.arg)
+            elif n.func.attr == "setdefault" and n.args:
+                add(n, str_key(n.args[0]))
+    for r in rets:
+        dict_keys(r.value)
+    keys = []
+    for _l, _c, k in sorted(seen, key=lambda x: (x[0], x[1])):
+        if k not in keys:
+            keys.append(k)
+    out = {"keys": keys[:MAX_KEYS]}
+    if len(keys) > MAX_KEYS:
+        out["keysMore"] = len(keys) - MAX_KEYS
+    for r in rets:
+        if isinstance(r.value, ast.Tuple) and r.value.elts and all(isinstance(e, ast.Name) for e in r.value.elts):
+            out["names"] = [e.id for e in r.value.elts][:MAX_KEYS]
+            break
+    return out
+
+
 def forward_json(scan, info):
     fn, owner = scan.find_method(info, "forward")
     if fn is None:
@@ -1394,17 +1591,106 @@ def forward_json(scan, info):
     a = fn.args
     pos = list(a.posonlyargs) + list(a.args)
     defaults = [None] * (len(pos) - len(a.defaults)) + list(a.defaults)
-    params = []
-    for p, d in list(zip(pos, defaults))[1:]:
-        params.append({"name": p.arg, "annotation": ast.unparse(p.annotation) if p.annotation else None,
-                       "default": ast.unparse(d) if d is not None else None})
-    for p, d in zip(a.kwonlyargs, a.kw_defaults):
-        params.append({"name": p.arg, "annotation": ast.unparse(p.annotation) if p.annotation else None,
-                       "default": ast.unparse(d) if d is not None else None, "kwonly": True})
-    doc = ast.get_docstring(fn)
-    return {"file": owner.fi.path, "line": fn.lineno, "owner": owner.name, "params": params,
+    full_doc = ast.get_docstring(fn) or ""
+    secs = doc_sections(full_doc)
+    entries = {}
+    for s in DOC_PARAMS:
+        for k, v in doc_entries(secs.get(s, [])).items():
+            entries.setdefault(k, v)
+
+    def param(p, d, kwonly):
+        j = {"name": p.arg, "annotation": ast.unparse(p.annotation) if p.annotation else None,
+             "default": ast.unparse(d) if d is not None else None}
+        if kwonly:
+            j["kwonly"] = True
+        # optional: the caller may leave it out (it has a default, any default). nullable: the type allows None.
+        # A required parameter typed X | None is nullable but not optional: leaving it out is a TypeError.
+        j["optional"] = d is not None
+        j["nullable"] = ann_has_none(p.annotation)
+        if p.arg in entries:
+            j["docText"] = entries[p.arg]
+            sh = shape_hint(entries[p.arg])
+            if sh:
+                j["shapeHint"] = sh
+        return j
+    params = [param(p, d, False) for p, d in list(zip(pos, defaults))[1:]]
+    params += [param(p, d, True) for p, d in zip(a.kwonlyargs, a.kw_defaults)]
+    out = output_of(fn)
+    ret_lines = []
+    for s in DOC_RETURNS:
+        ret_lines += secs.get(s, [])
+    rtext = " ".join(s for _i, s in ret_lines)[:MAX_DOC_TEXT]
+    if rtext:
+        out["docText"] = rtext
+        # the shape of the whole output: the first line of the Returns text, when it names one
+        sh = shape_hint(ret_lines[0][1])
+        if sh:
+            out["shapeHint"] = sh
+        # "key: text" lines in the Returns text for the keys found in the body
+        kd = doc_entries(ret_lines[1:] if len(ret_lines) > 1 else ret_lines)
+        for k in out["keys"]:
+            if k in kd:
+                out.setdefault("keyDocs", {})[k] = kd[k]
+                sh = shape_hint(kd[k])
+                if sh:
+                    out.setdefault("keyShapes", {})[k] = sh
+    end = getattr(fn, "end_lineno", None)
+    return {"file": owner.fi.path, "line": fn.lineno, **({"end": end} if end else {}), "owner": owner.name, "params": params,
             "returns": ast.unparse(fn.returns) if fn.returns else None,
-            "doc": (doc or "")[:600] or None}
+            "doc": (full_doc or "")[:600] or None, "output": out}
+
+
+def dims_json(scan, mod, names, set_names):
+    """Where the scan saw a dimension name: the root's arguments (and the fields of a config it was given), the
+    attributes of every module in tree order (first instance wins), floor divisions of two such names anywhere in
+    the repo, and assignments to an attribute in set_names (e.g. head_dim). Values are value records."""
+    args, attrs, got = [], [], set()
+    for name, pair in mod.args.items():
+        if name in names:
+            args.append({"name": name, **rec(pair)})
+        v = plain(pair[0])
+        if isinstance(v, dict):
+            for k, x in list(v.items())[:200]:
+                if isinstance(k, str) and k in names:
+                    args.append({"name": k, "via": name, **rec((x, None))})
+    seen = set()
+
+    def walk(m, path):
+        if m.id in seen:
+            return
+        seen.add(m.id)
+        for name, v in m.attrs.items():
+            if name not in names or name in got:
+                continue
+            p = plain(v)
+            if not isinstance(p, int) or isinstance(p, bool):
+                continue
+            got.add(name)
+            at, expr = m.attr_at.get(name, (None, None))
+            r = rec((v, at))
+            e = {"name": name, "cls": m.cls, "path": path, **r}
+            if expr:
+                e["expr"] = expr
+            if at and r.get("at") != at:
+                e["set"] = at
+            attrs.append(e)
+        for cname, c in m.children:
+            walk(c, (path + "." if path else "") + cname)
+    walk(mod, "")
+    divs, sets = [], []
+    for path in sorted(scan.files):
+        for n in ast.walk(scan.files[path].tree):
+            if isinstance(n, ast.BinOp) and isinstance(n.op, ast.FloorDiv):
+                a, b = last_name(n.left), last_name(n.right)
+                if a in names and b in names:
+                    divs.append((path, n.lineno, {"a": a, "b": b, "at": path + ":" + str(n.lineno)}))
+            elif isinstance(n, (ast.Assign, ast.AnnAssign)):
+                for t in (n.targets if isinstance(n, ast.Assign) else [n.target]):
+                    if isinstance(t, ast.Attribute) and t.attr in set_names:
+                        sets.append((path, n.lineno, {"name": t.attr, "at": path + ":" + str(n.lineno)}))
+    divs.sort(key=lambda x: (x[0], x[1]))
+    sets.sort(key=lambda x: (x[0], x[1]))
+    return {"args": args, "attrs": attrs, "floordiv": [d for _p, _l, d in divs[:20]], "assigned": [s for _p, _l, s in sets[:20]]}
 
 
 def candidates(scan):
@@ -1494,6 +1780,8 @@ def main():
     job = json.loads(sys.stdin.read())
     root = os.path.realpath(job["root"])
     scan = Interp()
+    dim_names = frozenset(str(x) for x in (job.get("dimNames") or []))
+    scan.dim_names = dim_names
     errors = []
     read = 0
     for rel in job.get("files", []):
@@ -1544,6 +1832,8 @@ def main():
             fix_tied(result["root"], seen)
             result["root"]["name"], result["root"]["path"] = info.name, ""
             result["forward"] = forward_json(scan, info)
+            if dim_names:
+                result["dims"] = dims_json(scan, mod, dim_names, frozenset(str(x) for x in (job.get("dimAttrs") or [])))
         except Budget:
             result["warnings"] = ["step budget exceeded; the tree may be partial"]
     elif name:

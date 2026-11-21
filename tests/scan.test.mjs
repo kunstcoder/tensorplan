@@ -192,3 +192,34 @@ test('the summary shows the source of the total', opts, () => {
   assert.match(a.stdout, /PARAMS {2}≥ 18,740 {2}\[code\]/);
   assert.doesNotMatch(a.stdout, /CONFIG|WEIGHTS/);
 });
+
+// ---------- the input and output contract of forward (new fields only) ----------
+test('pyscan.py: forward gains optional, nullable, docText, shapeHint and output keys; dims appear only when the job names dimension names', opts, () => {
+  const root = fixture('contract/dict-out');
+  const run = (extra) => JSON.parse(spawnSync('python3', ['-I', script('pyscan.py')], { input: JSON.stringify({ root, files: ['model.py'], rootClass: null, args: {}, ...extra }), encoding: 'utf8' }).stdout);
+  const plainJob = run({});
+  assert.equal(plainJob.dims, undefined, 'no dimNames, no dims');
+  const fw = plainJob.forward;
+  // optional: has a default; nullable: the type allows None
+  assert.deepEqual(fw.params.map((p) => [p.name, p.annotation, p.default, p.optional, p.nullable]), [['tokens', 'torch.Tensor', null, false, false], ['positions', 'torch.Tensor | None', null, false, true], ['mask', 'Optional[torch.Tensor]', 'None', true, true], ['scale', 'float', '1.0', true, false], ['cache', "'torch.Tensor | None'", 'None', true, true]]);
+  assert.deepEqual(fw.params[0].shapeHint, ['batch_size', 'seq_len']);
+  assert.equal(fw.params[3].shapeHint, undefined);
+  assert.deepEqual(fw.output.keys, ['hidden', 'logits', 'extra']);
+  assert.deepEqual(fw.output.keyShapes, { hidden: ['B', 'N', 'D'], logits: ['B', 'N', 'V'] });
+  assert.equal(fw.end, 60);
+  const withDims = run({ dimNames: ['dim', 'num_heads', 'head_dim'], dimAttrs: ['head_dim'] });
+  assert.deepEqual(withDims.dims.args.map((a) => [a.name, a.v, a.at]), [['dim', 32, 'model.py:16'], ['num_heads', 4, 'model.py:16']]);
+  assert.deepEqual(withDims.dims.attrs.map((a) => [a.name, a.cls, a.path, a.v, a.at, a.expr]), [['num_heads', 'Attention', 'attn', 4, 'model.py:10', 'num_heads'], ['head_dim', 'Attention', 'attn', 8, 'model.py:11', 'dim // num_heads']]);
+  assert.deepEqual(withDims.dims.floordiv, [{ a: 'dim', b: 'num_heads', at: 'model.py:11' }]);
+  assert.deepEqual(withDims.dims.assigned, [{ name: 'head_dim', at: 'model.py:11' }]);
+  assert.deepEqual(withDims.root, plainJob.root, 'the module tree does not change');
+});
+
+test('the scan summary names the inputs, the output and the dims', opts, () => {
+  const r = runScan(fixture('contract/tuple-out'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^INPUTS {2}2 {2}\(idx, targets\?\) {2}forward\(\) at model\.py:16$/m);
+  assert.match(r.stdout, /^OUTPUT {2}\(no annotation\) {2}\(logits, loss\)$/m);
+  assert.match(r.stdout, /^DIMS {4}D=48 \(hidden_size\) {2}H=6 \(n_heads\) {2}d_h=8 \(hidden_size \/\/ n_heads\) {2}L=2 \(n_layer\)$/m);
+  assert.ok(r.json.dims && r.json.forward.output, 'scan.json keeps what the summary used');
+});

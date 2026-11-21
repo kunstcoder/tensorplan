@@ -422,11 +422,6 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 .chip button { border: 0; background: none; color: var(--text-3); cursor: pointer; width: 20px; height: 20px; border-radius: 999px; display: grid; place-items: center; flex: none; }
 .chip button:hover { background: rgba(var(--ink), .1); color: var(--text); }
 /* a blueprint's Ask / Change switch */
-#ask-mode { display: inline-flex; flex: none; gap: 2px; padding: 3px; margin-left: -10px; border-radius: 999px; background: rgba(var(--ink), .06); }
-#ask-mode button { border: 0; background: none; color: var(--text-3); font: inherit; font-size: 12.5px; font-weight: 500; height: 28px; padding: 0 12px; border-radius: 999px; cursor: pointer; transition: background .15s var(--ease), color .15s var(--ease); }
-#ask-mode button:hover { color: var(--text); }
-#ask-mode button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
-#ask-mode button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 #ask-input { flex: 1; min-width: 160px; height: 38px; background: none; border: 0; outline: none; font-size: 15px; color: var(--text); }
 #ask-input::placeholder { color: var(--text-3); }
 #ask-input:disabled { cursor: not-allowed; }
@@ -521,7 +516,6 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
   /* every control in the bar, and the zoom buttons, are at least 44 px */
   header .btn, #search-btn { height: 44px; min-width: 44px; }
   header .btn.icon { width: 44px; }
-  #ask-mode button { height: 44px; }
   #crumbs button { min-height: 44px; }
   #zoom button { width: 44px; height: 44px; }
 }
@@ -592,7 +586,7 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
     <div id="ask-live" role="status" aria-live="polite"></div>
     <form id="ask-form" class="glass" autocomplete="off">
       <span id="ask-chips"></span>
-      <input id="ask-input" placeholder="Ask anything about this codebase…" spellcheck="false">
+      <input id="ask-input" placeholder="Ask anything about this model…" spellcheck="false">
       <span class="engine" id="ask-engine"><i></i>checking…</span>
       <button id="ask-send" type="submit" title="Ask" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
     </form>
@@ -608,11 +602,11 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
     <nav id="crumbs"></nav>
   </div>
   <div class="hc">
-    <button class="btn" id="search-btn" aria-label="Search files, routes, modules"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="st">Search files, routes, modules</span><span class="kbd">/</span></button>
+    <button class="btn" id="search-btn" aria-label="Search modules, classes, arguments"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="st">Search modules, classes, arguments</span><span class="kbd">/</span></button>
   </div>
   <div class="hr">
     <div id="hdr-ext" class="hr-ext"></div>
-    <div class="rel"><button class="btn" id="flows-btn" aria-label="Flows"><svg class="i" viewBox="0 0 24 24"><path d="M7 5v14l11-7z"/></svg><span class="bl">Flows</span></button><div id="flowmenu" class="menu glass"></div></div>
+    <div class="rel"><button class="btn" id="flows-btn" aria-label="Walkthroughs" title="Step-by-step walkthroughs of the model"><svg class="i" viewBox="0 0 24 24"><path d="M7 5v14l11-7z"/></svg><span class="bl">Walkthroughs</span></button><div id="flowmenu" class="menu glass"></div></div>
     <div class="rel"><button class="btn icon" id="filters-btn" title="Connection types" aria-label="Connection types"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button><div id="legend" class="menu glass"></div></div>
     <button class="btn icon" id="btn-panel" title="Toggle details (P)" aria-label="Toggle details" aria-expanded="true"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg></button>
   </div>
@@ -623,7 +617,7 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
 <div id="modal"><div class="box glass"></div></div>
 <div id="toast" class="glass"></div>
 <div id="palette"><div class="box glass">
-  <div class="in"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" placeholder="Search by name, description, path or route…" autocomplete="off" spellcheck="false"></div>
+  <div class="in"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" placeholder="Search by name, class, argument (dim=192) or description…" autocomplete="off" spellcheck="false"></div>
   <div id="results"></div>
   <div class="hint"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span></div>
 </div></div>
@@ -642,7 +636,7 @@ const AGENT = AGENT_ID === 'codex'
   ? { id: 'codex', name: 'Codex', app: 'Codex', cli: 'Codex', docs: 'https://developers.openai.com/codex',
       signIn: 'Open the Codex app (or run <code>codex login</code> in a terminal) to sign in, then ask again.' }
   : AGENT_ID === 'none'
-  ? { id: 'none', name: 'AI', app: 'your AI coding agent', cli: 'the Claude Code CLI or Codex', docs: 'https://github.com/haydenschmitty/floorplan#install',
+  ? { id: 'none', name: 'AI', app: 'your AI coding agent', cli: 'the Claude Code CLI or Codex', docs: 'https://docs.claude.com/en/docs/claude-code/overview',
       signIn: 'Sign in to it in a terminal, then ask again.' }
   : { id: 'claude', name: 'Claude', app: 'Claude Code', cli: 'the Claude Code CLI', docs: 'https://docs.claude.com/en/docs/claude-code/overview',
       signIn: 'Run <code>claude</code> in a terminal once to sign in, then ask again.' };
@@ -1704,10 +1698,10 @@ function renderPanel() {
       // { top: true }: right after the panel's header section instead of at the end
       const second = o.top ? html.indexOf('<div class="sec"', 1) : -1;
       html = second > 0 ? html.slice(0, second) + block + html.slice(second) : html + block;
-    } catch (e) { console.error('floorplan extension', e); }
+    } catch (e) { console.error('modelmap extension', e); }
   }
   panel.innerHTML = html || '';
-  extOut.forEach((o, i) => { try { o.bind?.(o.whole ? panel : panel.querySelector(`[data-ext="${i}"]`)); } catch (e) { console.error('floorplan extension', e); } });
+  extOut.forEach((o, i) => { try { o.bind?.(o.whole ? panel : panel.querySelector(`[data-ext="${i}"]`)); } catch (e) { console.error('modelmap extension', e); } });
   panel.scrollTop = 0;
   panel.querySelectorAll('[data-go]').forEach((a) => a.addEventListener('click', (ev) => { ev.preventDefault(); reveal(a.dataset.go); }));
   panel.querySelectorAll('[data-open]').forEach((a) => a.addEventListener('click', (ev) => { ev.preventDefault(); open(a.dataset.open); }));
@@ -1730,7 +1724,7 @@ function answerPanel() {
 const SYSTEM_GROUPS = [
   { label: 'Apps people use', hint: 'what users and staff open', kinds: ['ui'] },
   { label: 'Behind the scenes', hint: 'servers, background work, shared code', kinds: ['service', 'worker', 'library', 'feature', 'data', 'config'] },
-  { label: 'Outside services', hint: 'other companies your app relies on', kinds: ['external'] },
+  { label: 'Outside services', hint: 'outside this repo', kinds: ['external'] },
   { label: 'Developer tools', hint: 'scripts, tests, deployment', kinds: ['script', 'test', 'infra'] },
 ];
 function systemsSection(tops) {
@@ -1741,19 +1735,19 @@ function systemsSection(tops) {
     return items.length ? `<div class="group-h">${h(g.label)}<span class="gd">${h(g.hint)}</span></div><div class="list">${items.map((t) => rowFor(t, info(t).kind === 'external' ? '' : technical() && !PLAN && statsOf(t)?.files ? fmt(statsOf(t).loc) + ' loc' : statsOf(t)?.files ? plural(statsOf(t).files, 'file') : '')).join('')}</div>` : '';
   });
   const rest = tops.filter((t) => !placed.has(t));
-  if (rest.length) parts.push(`<div class="group-h">Other</div><div class="list">${rest.map((t) => rowFor(t)).join('')}</div>`);
-  return `<div class="sec"><h3>Systems <span class="c">${tops.length}</span></h3>${parts.join('')}</div>`;
+  if (rest.length) parts.push(`${MODEL ? '' : '<div class="group-h">Other</div>'}<div class="list">${rest.map((t) => rowFor(t)).join('')}</div>`);
+  return `<div class="sec"><h3>${MODEL ? 'Model' : 'Systems'} <span class="c">${tops.length}</span></h3>${parts.join('')}</div>`;
 }
 
 function overviewPanel() {
   const p = G.project;
   const tops = kids.get('root') || [];
   const undescribed = G.files.filter((f) => f.auto).length + routes.filter((r) => r.auto).length;
-  return `<div class="sec"><div class="ph"><span class="ico" style="--c:var(--accent)">${icon('feature')}</span><span class="kind">${PLAN ? 'Blueprint' : MODEL ? 'Model' : 'Codebase'}</span></div><h2 class="pt">${h(p.name)}</h2>${p.summary ? `<p class="pd">${h(p.summary)}</p>` : ''}
+  return `<div class="sec"><div class="ph"><span class="ico" style="--c:var(--accent)">${icon('feature')}</span><span class="kind">${PLAN ? 'Plan' : MODEL ? 'Model' : 'Map'}</span></div><h2 class="pt">${h(p.name)}</h2>${p.summary ? `<p class="pd">${h(p.summary)}</p>` : ''}
       ${MODEL ? `<div class="stats" style="margin-top:14px"><div><b>${fmt(G.meta.counts.modules || 0)}</b><span>modules</span></div></div>` /* modelmap: module counts; parameters come from ui/70-model.js */ : `<div class="stats" style="margin-top:14px"><div><b>${fmt(G.meta.counts.files)}</b><span>${PLAN ? 'planned files' : 'files'}</span></div>${PLAN ? `<div><b>${fmt((G.screens || []).length)}</b><span>screens</span></div>` : `<div><b>${fmt(G.meta.counts.loc)}</b><span>lines</span></div>`}<div><b>${fmt(routes.length)}</b><span>endpoints</span></div></div>`}
       ${undescribed ? `<div class="callout">${undescribed} files and endpoints still use generated names. Run the skill again to describe them.</div>` : ''}</div>
     ${systemsSection(tops)}
-    ${listSec('Guided flows', G.flows.map((f) => `<a class="row" data-flow="${hk(f.id)}"><span class="dot" style="background:var(--accent)"></span><span class="rt"><div class="rn">${h(f.title)}</div>${f.description ? `<div class="rd">${h(f.description)}</div>` : ''}</span><span class="rc">${f.steps.length} steps</span></a>`))}
+    ${listSec('Walkthroughs', G.flows.map((f) => `<a class="row" data-flow="${hk(f.id)}"><span class="dot" style="background:var(--accent)"></span><span class="rt"><div class="rn">${h(f.title)}</div>${f.description ? `<div class="rd">${h(f.description)}</div>` : ''}</span><span class="rc">${f.steps.length} steps</span></a>`))}
     ${listSec('Repositories', (G.meta.repos || []).map((r) => `<div class="row" style="cursor:default"><span class="dot" style="background:var(--text-4)"></span><span class="rt"><div class="rn">${h(r.name)}</div><div class="rp">${r.head ? `${h(r.branch || '')} @ ${h(r.head.slice(0, 7))}` : 'not a git repo when the map was built' /* modelmap: meta.repos without a commit */}</div></span></div>`))}
     ${p.entrypoints?.length ? listSec('Entrypoints', p.entrypoints.filter((e) => files.has(e)).map((e) => rowFor('f:' + e))) : ''}
     <div class="sec" style="color:var(--text-3);line-height:1.7;font-size:12px">Click a card to inspect it · double-click to open it<br><span class="kbd">/</span> search · <span class="kbd">⌫</span> up · <span class="kbd">F</span> fit · <span class="kbd">P</span> inspector</div>`;
@@ -1806,7 +1800,7 @@ function itemPanel(item, viaConnector) {
   } else if (i.type === 'file' || i.type === 'module') {
     const f = i.f, fid = 'f:' + f.p, url = editorUrl(f.p);
     if (f.note) html += `<div class="callout">${h(f.note)}</div>`;
-    if (f.tooLarge) html += `<div class="callout">Too big for Floorplan to read, so what it uses, its endpoints and any secrets in it weren’t checked. Ask Claude or Codex to update the floorplan with a bigger file limit to include it.</div>`;
+    if (f.tooLarge) html += `<div class="callout">Too big for the scanner to read, so what it uses, its endpoints and any secrets in it weren’t checked. Ask Claude or Codex to update the map with a bigger file limit to include it.</div>`;
     html += pathBox(f.p);
     if (url) actions.push(`<a class="btn soft" href="${hk(url)}">${iconI('open')}Open in editor</a>`);
     if (actions.length) html += `<div class="actions">${actions.join('')}</div>`;
@@ -1861,8 +1855,10 @@ function edgePanel(e) {
 }
 
 // ======================= search (command palette) =======================
+// modelmap: a module is also found by its class (m.cls) and its simple arguments as name=value (dim=192); its row shows the class
+const argWords = (m) => Object.entries(m?.args || {}).filter(([, r]) => ['number', 'string', 'boolean'].includes(typeof r?.v)).map(([k, r]) => (/^\d+$/.test(k) ? String(r.v) : `${k}=${r.v}`)).join(' ');
 const index = [
-  ...G.nodes.map((n) => ({ id: 'n:' + n.id, name: n.label, desc: n.summary || '', path: n.id, kind: n.kind, w: 4 })),
+  ...G.nodes.map((n) => ({ id: 'n:' + n.id, name: n.label, desc: n.summary || '', path: n.id, kind: n.kind, cls: n.m?.cls || '', args: argWords(n.m), w: 4 })),
   ...G.files.map((f) => ({ id: 'f:' + f.p, name: f.name, desc: f.d || '', path: f.p, kind: 'file', w: 3 })),
   ...routes.map((r, i) => ({ id: 'r:' + i, name: r.name, desc: r.d || '', path: `${r.m} ${r.p}`, kind: 'route', w: 3 })),
   ...G.files.flatMap((f) => (f.s || []).map((s, i) => ({ id: `s:${f.p}#${i}`, name: s[0], desc: s[4] || '', path: f.p, kind: symIcon(s[1]), w: 1 }))).filter((x) => parentOf.has(x.id)),
@@ -1877,10 +1873,10 @@ function runSearch() {
   if (!terms.length) scored = (kids.get('root') || []).map((id) => [1, index.find((x) => x.id === id)]).filter((x) => x[1]);
   else for (const it of index) {
     if (!technical() && (it.kind === 'function' || it.kind === 'class')) continue;
-    const n = it.name.toLowerCase(), d = it.desc.toLowerCase(), p = it.path.toLowerCase();
+    const n = it.name.toLowerCase(), d = it.desc.toLowerCase(), p = it.path.toLowerCase(), c = (it.cls || '').toLowerCase(), a = (it.args || '').toLowerCase();
     let s = 0;
     for (const t of terms) {
-      const sc = n === t ? 30 : n.startsWith(t) ? 20 : n.includes(t) ? 12 : p.includes(t) ? 6 : d.includes(t) ? 4 : 0;
+      const sc = n === t ? 30 : c === t ? 28 : n.startsWith(t) ? 20 : c.startsWith(t) ? 18 : n.includes(t) ? 12 : c.includes(t) ? 10 : a.split(' ').includes(t) ? 9 : a.includes(t) ? 7 : p.includes(t) ? 6 : d.includes(t) ? 4 : 0;
       if (!sc) { s = 0; break; }
       s += sc;
     }
@@ -1891,7 +1887,7 @@ function runSearch() {
   sRes.innerHTML = sItems.map((it, i) => {
     const ii = info(it.id);
     const ic = it.kind === 'route' ? `<span class="method" style="--m:${methodVar(ii.r.m)}">${h(ii.r.m)}</span>` : `<span class="ico" style="--c:${colorOf(ii)}">${icon(iconKey(ii))}</span>`;
-    return `<div class="r${i === 0 ? ' active' : ''}" data-i="${i}">${ic}<span class="rt"><div class="rn">${h(it.name)}</div><div class="rd">${h(it.desc || it.path)}</div></span><span class="rk">${h(it.kind === 'route' ? ii.r.p : it.kind)}</span></div>`;
+    return `<div class="r${i === 0 ? ' active' : ''}" data-i="${i}">${ic}<span class="rt"><div class="rn">${h(it.name)}</div><div class="rd">${h(it.cls && it.path !== it.name ? [it.path, it.desc].filter(Boolean).join(' · ') : it.desc || it.path)}</div></span><span class="rk">${h(it.kind === 'route' ? ii.r.p : it.cls || it.kind)}</span></div>`;
   }).join('') || '<div class="empty">No matches</div>';
   sRes.querySelectorAll('.r').forEach((r) => { r.addEventListener('mousedown', (ev) => { ev.preventDefault(); pick(+r.dataset.i); }); r.addEventListener('mousemove', () => setActive(+r.dataset.i)); });
 }
@@ -1911,19 +1907,19 @@ const fm = $('#flowmenu');
 fm.addEventListener('click', (ev) => ev.stopPropagation());
 function renderFlowMenu() {
   fm.innerHTML = G.flows.map((f) => f.custom && !EXPORTED
-    ? `<div class="r custom" data-flow="${hk(f.id)}"><div class="rt"><b>${h(f.title)}<span class="yours">yours</span></b><span>${f.steps.length} steps${f.description ? ' · ' + h(f.description) : ''}</span></div><button class="del" data-del="${hk(f.id)}" title="Delete flow">${iconI('x')}</button></div>`
+    ? `<div class="r custom" data-flow="${hk(f.id)}"><div class="rt"><b>${h(f.title)}<span class="yours">yours</span></b><span>${f.steps.length} steps${f.description ? ' · ' + h(f.description) : ''}</span></div><button class="del" data-del="${hk(f.id)}" title="Delete walkthrough">${iconI('x')}</button></div>`
     : `<div class="r" data-flow="${hk(f.id)}"><b>${h(f.title)}</b><span>${f.steps.length} steps${f.description ? ' · ' + h(f.description) : ''}</span></div>`).join('')
-    + (EXPORTED ? (G.flows.length ? '' : '<div class="r" style="cursor:default"><span>No flows in this copy.</span></div>') : (G.flows.length ? '<div class="mi-sep"></div>' : '')
-    + `<div class="r new" data-new>${iconI('spark')}<b>Request a new flow…</b></div>`);
+    + (EXPORTED ? (G.flows.length ? '' : '<div class="r" style="cursor:default"><span>No walkthroughs in this copy.</span></div>') : (G.flows.length ? '<div class="mi-sep"></div>' : '')
+    + `<div class="r new" data-new>${iconI('spark')}<b>Request a new walkthrough…</b></div>`);
   fm.querySelectorAll('[data-flow]').forEach((r) => r.onclick = () => { fm.classList.remove('open'); startFlow(r.dataset.flow); });
   fm.querySelectorAll('[data-del]').forEach((b) => b.onclick = (ev) => { ev.stopPropagation(); deleteCustomFlow(b.dataset.del); });
   const nf = fm.querySelector('[data-new]'); if (nf) nf.onclick = showFlowForm;
 }
 function showFlowForm() {
-  fm.innerHTML = `<form class="ff"><label>Describe what to trace, and ${AGENT.name} builds a step-by-step flow through the map.</label>
-    <textarea placeholder="e.g. How does an order end up charged through Stripe?" spellcheck="false"></textarea>
-    ${askState.engine ? '' : `<div class="note">Needs ${AGENT.cli} (run node floorplan/serve.mjs)${AGENT.id === 'claude' ? ' or the Claude app' : ''}.</div>`}
-    <div class="ffa"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" ${askState.engine ? '' : 'disabled'}>Build flow</button></div></form>`;
+  fm.innerHTML = `<form class="ff"><label>Describe what to trace, and ${AGENT.name} builds a step-by-step walkthrough of the modules.</label>
+    <textarea placeholder="e.g. How does the input reach the output, block by block?" spellcheck="false"></textarea>
+    ${askState.engine ? '' : `<div class="note">Needs ${AGENT.cli} (run node modelmap/serve.mjs)${AGENT.id === 'claude' ? ' or the Claude app' : ''}.</div>`}
+    <div class="ffa"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" ${askState.engine ? '' : 'disabled'}>Build walkthrough</button></div></form>`;
   const form = fm.querySelector('form'), ta = form.querySelector('textarea');
   setTimeout(() => ta.focus(), 30);
   ta.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); form.requestSubmit(); } if (ev.key === 'Escape') { ev.stopPropagation(); renderFlowMenu(); } });
@@ -1945,7 +1941,7 @@ function addFlow(stored) {
   if (G.flows.some((x) => x.id === stored.id)) return null;
   const steps = (stored.steps || []).map((s) => ({ ref: liveRef(s.ref), note: s.note || '' })).filter((s) => s.ref);
   if (steps.length < 2) return null;
-  const fl = { id: stored.id, title: stored.title || 'Flow', description: stored.description || '', steps, custom: true };
+  const fl = { id: stored.id, title: stored.title || 'Walkthrough', description: stored.description || '', steps, custom: true };
   G.flows.push(fl);
   return fl;
 }
@@ -1990,7 +1986,7 @@ async function requestFlow(prompt) {
   if (askState.busy) cancelAsk();
   setBusy(true);
   askState.ctl = new AbortController();
-  const label = `New flow: ${prompt}`;
+  const label = `New walkthrough: ${prompt}`;
   const lines = ['Thinking…'];
   const progress = (t) => { lines.push(t); showProgress(label, lines.slice(-6)); };
   showProgress(label, lines);
@@ -2002,7 +1998,7 @@ async function requestFlow(prompt) {
     G.flows.push(fl);
     await saveCustomFlow(fl);
     renderFlowMenu();
-    sheetShell(label, `<p>Added <strong>${h(fl.title)}</strong> to Flows, ${plural(fl.steps.length, 'step')}.${fl.description ? ' ' + h(fl.description) : ''}</p>
+    sheetShell(label, `<p>Added <strong>${h(fl.title)}</strong> to Walkthroughs, ${plural(fl.steps.length, 'step')}.${fl.description ? ' ' + h(fl.description) : ''}</p>
       <div class="sheet-actions"><button class="btn soft" data-play="${hk(fl.id)}">${iconI('right')}Play again</button></div>`);
     sheet.querySelector('[data-play]').onclick = () => startFlow(fl.id);
     startFlow(fl.id);
@@ -2067,12 +2063,12 @@ const askState = { engine: null, sample: null, busy: false, ctl: null, session: 
 const askInput = $('#ask-input'), askSend = $('#ask-send'), sheet = $('#ask-sheet'), warn = $('#ask-warn');
 const DOCS = 'https://docs.claude.com/en/docs/claude-code/overview'; // the Claude app's tip: install the CLI
 const WARNINGS = {
-  no_engine: `Asking needs <b>${AGENT.cli}</b>. From the codebase root run <code>node floorplan/serve.mjs</code>${AGENT.id === 'claude' ? ', or open this map in the Claude app' : ''}.`,
+  no_engine: `Asking needs <b>${AGENT.cli}</b>. From the repo root run <code>node modelmap/serve.mjs</code>${AGENT.id === 'claude' ? ', or open this map in the Claude app' : ''}.`,
   cli_missing: `Requires <b>${AGENT.cli}</b> installed to work. <a href="${AGENT.docs}" target="_blank" rel="noopener">Install it</a>, then restart <code>serve.mjs</code>.`,
   not_logged_in: `${Cap(AGENT.cli)} isn't signed in. ${AGENT.signIn}`,
   app_unavailable: `Claude isn't available for this map in this view.`,
   not_granted: `Claude access was declined for this map. Reload the page to be asked again.`,
-  cli_tip: `Install the <b>Claude Code CLI</b> for a better experience: it can read your source code, not just this map. <a href="${DOCS}" target="_blank" rel="noopener">Install it</a>, then run <code>node floorplan/serve.mjs</code> in the codebase.`,
+  cli_tip: `Install the <b>Claude Code CLI</b> for a better experience: it can read your source code, not just this map. <a href="${DOCS}" target="_blank" rel="noopener">Install it</a>, then run <code>node modelmap/serve.mjs</code> in the repo.`,
 };
 function setWarning(code) {
   warn.hidden = !code;
@@ -2080,7 +2076,7 @@ function setWarning(code) {
   if (!code) return;
   warn.innerHTML = `<svg class="i" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><span>${WARNINGS[code] || h(code)}</span>${code === 'no_engine' ? '<button type="button" data-copycmd>Copy command</button>' : code === 'cli_tip' ? '<button type="button" data-dismiss>Got it</button>' : ''}`;
   warn.querySelector('[data-dismiss]')?.addEventListener('click', () => setWarning(null));
-  warn.querySelector('[data-copycmd]')?.addEventListener('click', (e) => { const b = e.currentTarget; copy('node floorplan/serve.mjs', { select: warn.querySelector('code') }).then((ok) => { if (ok) b.textContent = 'Copied'; }); });
+  warn.querySelector('[data-copycmd]')?.addEventListener('click', (e) => { const b = e.currentTarget; copy('node modelmap/serve.mjs', { select: warn.querySelector('code') }).then((ok) => { if (ok) b.textContent = 'Copied'; }); });
 }
 function setEngine(engine, label, warning) {
   askState.engine = engine;
@@ -2094,7 +2090,6 @@ function setEngine(engine, label, warning) {
   askInput.placeholder = engine ? `Ask anything about ${G.project.name}…` : 'Asking is unavailable';
   if (typeof renderChips === 'function' && askState.context) renderChips();
   setWarning(warning || null);
-  addModeSwitch();
 }
 async function detectEngine() {
   const S = window.FLOORPLAN_SERVER;
@@ -2190,69 +2185,6 @@ function cancelAsk() {
   if (askState.engine === 'cli') fetch('/api/cancel', { method: 'POST', headers: { 'x-floorplan-token': window.FLOORPLAN_SERVER.token } }).catch(() => {});
 }
 
-// ---------- changing a blueprint from the map (served by serve.mjs) ----------
-// The Ask bar gets an Ask / Change switch. A change goes to the agent, the server checks and saves the
-// updated plan and redraws the map, every open tab reloads, and the new and changed cards are highlighted
-// as recent work. What changed is kept across that reload in sessionStorage, with an Undo.
-const CHANGE_KEY = 'floorplan-change';
-// a server whose engine can't be held to the plan's format says change: false
-const canChange = () => PLAN && askState.engine === 'cli' && window.FLOORPLAN_SERVER?.change !== false;
-function setAskMode(m) {
-  askState.mode = canChange() && m === 'change' ? 'change' : 'ask';
-  $('#ask-mode')?.querySelectorAll('button').forEach((b) => { b.classList.toggle('on', b.dataset.m === askState.mode); b.setAttribute('aria-pressed', String(b.dataset.m === askState.mode)); });
-  if (askState.engine) askInput.placeholder = askState.mode === 'change' ? 'Ask for a change, e.g. “also plan out refunds”…' : `Ask anything about ${G.project.name}…`;
-  askSend.title = askState.busy ? 'Stop' : askState.mode === 'change' ? 'Make this change' : 'Ask';
-}
-function addModeSwitch() {
-  if (!canChange() || $('#ask-mode')) return;
-  const sw = document.createElement('span');
-  sw.id = 'ask-mode';
-  sw.innerHTML = '<button type="button" data-m="ask" title="Ask a question about the plan">Ask</button><button type="button" data-m="change" title="Ask for a change, addition or removal, and the map is redrawn">Change</button>';
-  sw.querySelectorAll('button').forEach((b) => b.onclick = () => { setAskMode(b.dataset.m); askInput.focus(); });
-  $('#ask-form').prepend(sw);
-  setAskMode('ask');
-}
-const stash = { get: () => { try { return JSON.parse(sessionStorage.getItem(CHANGE_KEY) || 'null'); } catch { return null; } }, set: (v) => { try { v ? sessionStorage.setItem(CHANGE_KEY, JSON.stringify(v)) : sessionStorage.removeItem(CHANGE_KEY); } catch {} } };
-async function requestChange(question) {
-  setBusy(true);
-  askState.ctl = new AbortController();
-  const lines = ['Reading the plan…'];
-  const progress = (t) => { lines.push(t); showProgress(question, lines.slice(-6)); };
-  showProgress(question, lines);
-  try {
-    const r = await askViaCli(question, progress, 'change');
-    stash.set({ question, title: r.title, summary: r.summary, followups: r.followups || [], undo: r.undo, at: Date.now() });
-    progress('Redrawing the map');
-    setTimeout(() => location.reload(), 4000); // in case the reload notice doesn't arrive
-  } catch (e) {
-    if (e?.name === 'AbortError') showFailure(question, 'cancelled');
-    else if (e?.code === 'change_invalid' || e?.code === 'busy') sheetShell(question, `<p class="err">${h(String(e.message).split('\n')[0])}</p>${md(String(e.message).split('\n').slice(1).join('\n'))}`);
-    else showFailure(question, e?.code || 'upstream_error', e?.message || String(e));
-  } finally { setBusy(false); }
-}
-/** After the reload a change causes: what changed, with Undo and the changed cards on one board. */
-function showChangeResult() {
-  const c = stash.get();
-  stash.set(null);
-  if (!c) return;
-  if (c.undone) { toast('Change undone'); return; }
-  if (Date.now() - c.at > 120000) return;
-  const items = (G.recent?.items || []).filter((x) => parentOf.has(x.id)).map((x) => ({ id: x.id, note: x.note }));
-  closeSheet(); // a card in the link opens the details sheet on a phone, and it would sit on top of this summary
-  sheetShell(c.question, `<p><strong>${h(c.title || 'Plan updated')}</strong></p>${md(c.summary)}
-    <div class="sheet-actions">${items.length ? `<button class="btn soft" data-cr="show">${iconI('search')}Show ${plural(items.length, 'change')}</button>` : ''}<button class="btn soft" data-cr="undo">${iconI('left')}Undo</button></div>
-    ${c.followups?.length ? `<div class="followups">${c.followups.slice(0, 3).map((f) => `<button data-cf="${hk(f)}">${h(f)}</button>`).join('')}</div>` : ''}`);
-  sheet.querySelector('[data-cr="show"]')?.addEventListener('click', () => showBoard({ title: c.title || 'What changed', question: c.question, items }));
-  sheet.querySelector('[data-cr="undo"]').addEventListener('click', async (ev) => {
-    ev.currentTarget.disabled = true;
-    const r = await fetch('/api/plan/undo', { method: 'POST', headers: { 'x-floorplan-token': window.FLOORPLAN_SERVER.token } }).then((x) => x.json()).catch(() => ({ ok: false, error: 'Could not reach the map server.' }));
-    if (!r.ok) { toast(r.error || 'Couldn’t undo'); ev.currentTarget.disabled = false; return; }
-    stash.set({ undone: true, at: Date.now() });
-    setTimeout(() => location.reload(), 4000);
-  });
-  sheet.querySelectorAll('[data-cf]').forEach((b) => b.onclick = () => { setAskMode('change'); askInput.value = b.dataset.cf; submitAsk(); });
-}
-
 async function askViaCli(question, progress, mode = 'ask') {
   const res = await fetch('/api/ask', {
     method: 'POST', signal: askState.ctl.signal,
@@ -2313,7 +2245,7 @@ function renderChips() {
   const box = $('#ask-chips');
   box.innerHTML = askState.context.map((id) => { const i = info(id); return `<span class="chip" title="${h(i.path || '')}"><span class="ico" style="--c:${colorOf(i)}">${icon(iconKey(i))}</span><span>${h(i.name)}</span><button type="button" data-rm="${hk(id)}" aria-label="Remove">${iconI('x')}</button></span>`; }).join('');
   box.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { askState.context = askState.context.filter((x) => x !== b.dataset.rm); renderChips(); askInput.focus(); });
-  askInput.placeholder = !askState.engine ? 'Asking is unavailable' : askState.mode === 'change' ? (askState.context.length ? 'What should change here?' : 'Ask for a change, e.g. “also plan out refunds”…') : askState.context.length ? 'Ask about this…' : `Ask anything about ${G.project.name}…`;
+  askInput.placeholder = !askState.engine ? 'Asking is unavailable' : askState.context.length ? 'Ask about this…' : `Ask anything about ${G.project.name}…`;
   askSend.disabled = !askState.engine;
 }
 askInput.addEventListener('keydown', (ev) => { if (ev.key === 'Backspace' && !askInput.value && askState.context.length) { askState.context.pop(); renderChips(); } });
@@ -2326,7 +2258,6 @@ async function submitAsk() {
   if (!question || !askState.engine) return;
   askInput.value = '';
   askState.context = []; renderChips();
-  if (askState.mode === 'change') return requestChange(ctxIds.length ? `${question}\n\nThis is about: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.` : question);
   const shown = question;
   // what Claude sees: the question plus the pinned items, by id, so it starts from them
   if (ctxIds.length) question += `\n\nFocus on these map items: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.`;
@@ -2351,22 +2282,24 @@ if (!EXPORTED) loadCustomFlows();
 
 // ======================= boot =======================
 $('#proj-name').textContent = revealHidden(G.project.name);
+// modelmap: a model map has no connections to filter yet, so the filter button goes (it also holds "Show technical detail")
+if (!G.links.length) $('#filters-btn').parentElement.style.display = 'none';
 if (EXPORTED) {
   document.body.classList.add('exported');
   const at = new Date(EXPORTED.at);
   const tag = document.createElement('span');
   tag.className = 'xtag';
   tag.textContent = isNaN(at) ? 'Exported copy' : `Exported ${at.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
-  tag.title = 'A copy of this map to look around in. Asking questions needs Floorplan with Claude Code or Codex, in the codebase itself.';
+  tag.title = 'A copy of this map to look around in. Asking questions needs modelmap with Claude Code or Codex, in the repo itself.';
   $('#proj-name').after(tag);
   // whoever receives a copy can find where it came from
   const made = document.createElement('a');
   made.id = 'madewith'; made.className = 'glass';
-  made.href = 'https://github.com/haydenschmitty/floorplan'; made.target = '_blank'; made.rel = 'noopener';
+  // modelmap: no public home page yet, so the badge names the tool without a link
   const logo = $('.brand .mark').cloneNode();
   logo.alt = '';
-  const name = document.createElement('b'); name.textContent = 'Floorplan';
-  const free = document.createElement('span'); free.className = 'x'; free.textContent = '· free and open source';
+  const name = document.createElement('b'); name.textContent = 'modelmap';
+  const free = document.createElement('span'); free.className = 'x'; free.textContent = '· a model map for Claude Code';
   made.append('Made with', logo, name, free);
   $('#stage').appendChild(made);
 }
@@ -2506,7 +2439,7 @@ function playFlow({ title = 'Tour', description = '', steps = [], inPlace = fals
 }
 const ext = { sections: { overview: [], item: [] }, listeners: {} };
 const custom = { panel: null };
-function emit(event, data) { for (const fn of ext.listeners[event] || []) { try { fn(data); } catch (e) { console.error('floorplan extension', e); } } }
+function emit(event, data) { for (const fn of ext.listeners[event] || []) { try { fn(data); } catch (e) { console.error('modelmap extension', e); } } }
 window.Floorplan = Object.freeze({
   version: 1,
   graph: G, query: Q, state, agent: AGENT, exported: EXPORTED,
@@ -2522,17 +2455,9 @@ window.Floorplan = Object.freeze({
   closeMenus: () => { closeMenu(); fm.classList.remove('open'); legendEl.classList.remove('open'); },
   // asking
   addAskContext, ask: (text) => { closeSheet(); askInput.value = text; submitAsk(); }, askEngine: () => askState.engine,
-  // a blueprint's Change mode: whether it's available here, and putting a request in the Ask bar to finish and send
-  canChange: () => canChange(),
-  draftChange(text) {
-    if (!canChange()) return false;
-    closeSheet(); // on a phone the open details sheet hides the ask bar, so the request would be typed where nobody can see it
-    setAskMode('change');
-    askInput.value = text;
-    askInput.focus();
-    askInput.setSelectionRange(text.length, text.length);
-    return true;
-  },
+  // modelmap: a model map has no blueprint Change mode (serve.mjs answers change: false); kept so extensions see the same surface
+  canChange: () => false,
+  draftChange: () => false,
   // chrome
   addHeaderButton({ id, label = '', icon: ic, svg, title = '', onClick }) {
     const b = document.createElement('button');
@@ -2558,7 +2483,7 @@ const init = readHash();
 state.container = init.v; state.selected = init.s;
 if (init.s && isPhone()) { document.body.classList.remove('no-panel'); $('#btn-panel').setAttribute('aria-expanded', 'true'); } // a shared link to a box opens its details
 const fontsReady = document.fonts?.ready ? Promise.race([document.fonts.ready, new Promise((ok) => setTimeout(ok, 1500))]) : Promise.resolve();
-fontsReady.then(() => render({ after: () => { renderPanel(); emit('ready', {}); if (PLAN && window.FLOORPLAN_SERVER) showChangeResult(); } }));
+fontsReady.then(() => render({ after: () => { renderPanel(); emit('ready', {}); } }));
 })();
 </script>
 <!--__UI_EXTENSIONS__-->

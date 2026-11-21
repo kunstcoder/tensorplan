@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { foldTree, pattern } from './fold.mjs';
+import { buildContract, mergeEstimates } from './contract.mjs';
 
 export const GRAPH_SCHEMA = 'modelmap/graph@1';
 export const MAX_ARGS = 12;      // arguments kept per module
@@ -155,14 +156,15 @@ function capStrings(v, depth = 0) {
   return out;
 }
 
-const emptyDescriptions = () => ({ classes: Object.create(null), modules: Object.create(null) });
+const emptyDescriptions = () => ({ classes: Object.create(null), modules: Object.create(null), contract: null });
 
 /**
  * The graph for a scan. descriptions: the merged result of loadDescriptions(). name: the repo's name for the map's
  * meta.rootName (default scan.meta.root). root: the repo's absolute path, for the viewer's editor links (meta.root).
- * repos: meta.repos, [{ path, name, branch?, head? }] (build.mjs reads them from git).
+ * repos: meta.repos, [{ path, name, branch?, head? }] (build.mjs reads them from git). warnings: an array that
+ * gets a line for each estimate of the descriptions' "contract" block that was dropped (lib/contract.mjs).
  */
-export function toGraph(scan, { descriptions, name, root, repos } = {}) {
+export function toGraph(scan, { descriptions, name, root, repos, warnings } = {}) {
   if (!scan || !isObj(scan.root)) throw new Error('the scan has no root module');
   const D = descriptions && isObj(descriptions) ? descriptions : emptyDescriptions();
   const classes = isObj(D.classes) ? D.classes : {}, modules = isObj(D.modules) ? D.modules : {};
@@ -225,6 +227,8 @@ export function toGraph(scan, { descriptions, name, root, repos } = {}) {
 
   const res = isObj(scan.resolution) ? scan.resolution : {};
   const rootNode = nodes[0];
+  // the input and output contract of the root's forward(); absent when the scan found no forward
+  const contract = buildContract(scan, D, Array.isArray(warnings) ? warnings : []);
   return {
     schema: GRAPH_SCHEMA,
     meta: {
@@ -240,11 +244,13 @@ export function toGraph(scan, { descriptions, name, root, repos } = {}) {
         modules: countTree(scan.root),
         params: rootNode.m.params.v,
         unknownParts: (res.unknown || 0) + (res.external || 0) + (res.incomplete || 0),
+        contractInputs: contract ? contract.inputs.length : 0,
       },
     },
     project: { name: rootNode.label, summary: rootNode.summary },
     nodes,
     files: [], routes: [], links: [], flows: [], tour: [],
+    ...(contract ? { contract } : {}),
   };
 }
 
@@ -278,6 +284,11 @@ export function loadDescriptions(dir) {
       }
     }
     if (bad) out.warnings.push('descriptions/' + n + ': ' + bad + ' entr' + (bad === 1 ? 'y' : 'ies') + ' without text skipped');
+    // the estimates of the input and output contract; checked against the scan by buildContract()
+    if (data.contract !== undefined) {
+      if (isObj(data.contract)) out.contract = mergeEstimates(out.contract, data.contract);
+      else out.warnings.push('descriptions/' + n + ': "contract" skipped: expected { "inputs": {...}, "output": {...} }');
+    }
     out.files.push(n);
   }
   return out;

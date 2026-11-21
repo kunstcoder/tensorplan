@@ -56,7 +56,8 @@ const descriptions = loadDescriptions(descDir);
 const gitOut = (a) => git(root, a) || null; // lib/common.mjs: an argument list, never a shell
 const head = gitOut(['rev-parse', 'HEAD']);
 const repos = [head ? { path: '.', name: path.basename(root), branch: gitOut(['rev-parse', '--abbrev-ref', 'HEAD']), head } : { path: '.', name: path.basename(root) }];
-const graph = toGraph(scan, { descriptions, root, repos });
+const contractWarnings = [];
+const graph = toGraph(scan, { descriptions, root, repos, warnings: contractWarnings });
 // the map folder ignores itself: nothing in it belongs in the repo's history
 fs.writeFileSync(path.join(outDir, '.gitignore'), '*\n');
 fs.writeFileSync(path.join(outDir, 'graph.json'), JSON.stringify(graph));
@@ -116,7 +117,11 @@ const report = [
   'PARAMS  ' + shown + '  [' + P.src + ']' + (P.lowerBound && P.why ? '  (' + P.why + ')' : ''),
   'CARDS   ' + graph.nodes.length + ' on the map for ' + graph.meta.counts.modules + ' module instances' + (graph.meta.counts.unknownParts ? ', ' + graph.meta.counts.unknownParts + ' unknown parts' : ''),
   'TEXT    ' + (descriptions.files.length ? descriptions.files.length + ' description file(s): ' + (Object.keys(descriptions.classes).length) + ' classes, ' + Object.keys(descriptions.modules).length + ' modules' : 'no descriptions yet (' + shownPath(descDir) + '/)'),
+  ...(graph.contract ? ['INPUTS  ' + graph.contract.inputs.length + ' of forward(), output ' + (graph.contract.output.type || '(no annotation)') + (graph.contract.output.keys.length ? ' with ' + graph.contract.output.keys.length + ' keys' : '')
+    + ', ' + [...graph.contract.inputs, ...graph.contract.output.keys].filter((x) => x.shape?.v).length + ' shapes known'
+    + (graph.contract.dims.length ? '; dims ' + graph.contract.dims.map((d) => d.sym + '=' + d.value).join(' ') : '')] : []),
   ...descriptions.warnings.map((w) => 'NOTE    ' + w),
+  ...contractWarnings.map((w) => 'NOTE    ' + w),
   'GIT     ' + shownPath(outDir) + '/ is kept out of git (it ignores itself)',
   '',
   '✓ wrote ' + path.join(outDir, 'index.html') + ' (' + fmtNum(Math.round(html.length / 1024)) + ' KB) and graph.json',

@@ -275,3 +275,49 @@ test('meta.repos without git has no commit', opts, () => {
   assert.deepEqual(readMap(out).graph.meta.repos, [{ path: '.', name: path.basename(root) }]);
   assert.doesNotMatch(node(script('status.mjs'), [root, '--out', out]).stdout, /records no git commit/);
 });
+
+// ---------- the input and output contract (graph.contract) ----------
+test('graph.contract and meta.counts.contractInputs come from the root forward(); a root without forward has no contract and counts 0', opts, () => {
+  const out = scanInto(fixture('contract/no-div'));
+  assert.equal(build(fixture('contract/no-div'), out).status, 0);
+  const { graph } = readMap(out);
+  assert.deepEqual(Object.keys(graph.contract), ['forward', 'inputs', 'output', 'dims']);
+  assert.equal(graph.meta.counts.contractInputs, 1);
+  assert.deepEqual(graph.contract.inputs.map((x) => [x.name, x.optional, x.nullable]), [['x', false, false]]);
+  const root = tmpDir('modelmap-noforward-');
+  fs.writeFileSync(path.join(root, 'm.py'), 'from torch import nn\nclass Net(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.fc = nn.Linear(2, 2)\n');
+  const out2 = scanInto(root);
+  const r = build(root, out2);
+  assert.equal(r.status, 0, r.stderr);
+  const g2 = readMap(out2).graph;
+  assert.equal('contract' in g2, false);
+  assert.equal(g2.meta.counts.contractInputs, 0);
+  assert.doesNotMatch(r.stdout, /^INPUTS/m);
+});
+
+test('loadDescriptions reads a contract block (a later file wins); a contract that is not an object is skipped with a note; toGraph reports dropped estimates', () => {
+  const dir = tmpDir('modelmap-desc-');
+  fs.writeFileSync(path.join(dir, 'a.json'), JSON.stringify({ contract: { inputs: { x: { shape: '[B]', d: 'a' } } } }));
+  fs.writeFileSync(path.join(dir, 'b.json'), JSON.stringify({ classes: { Net: { d: 'net' } }, contract: { inputs: { x: { shape: '[B, N]' }, y: { shape: '[B]' } } } }));
+  fs.writeFileSync(path.join(dir, 'c.json'), JSON.stringify({ contract: 'nope' }));
+  const D = loadDescriptions(dir);
+  assert.deepEqual({ ...D.contract.inputs.x }, { shape: '[B, N]', d: 'a' });
+  assert.ok(D.warnings.some((w) => /c\.json: "contract" skipped/.test(w)));
+  assert.deepEqual(D.files, ['a.json', 'b.json', 'c.json']);
+  const scan = { root: { name: 'Net', path: '', cls: 'Net', kind: 'repo', params: { v: 6, src: 'code' }, children: [] }, forward: { file: 'm.py', line: 9, owner: 'Net', params: [{ name: 'x', annotation: null, default: null }] } };
+  const warnings = [];
+  const g = toGraph(scan, { descriptions: D, warnings });
+  assert.deepEqual(g.contract.inputs[0].shape, { v: '[B, N]', src: 'estimate' });
+  assert.equal(g.contract.inputs[0].d, 'a');
+  assert.deepEqual(warnings, ['contract: inputs.y dropped: forward() has no input of this name']);
+  assert.equal(toGraph(scan).contract.inputs[0].shape.v, null, 'no descriptions, no estimate');
+});
+
+test('the page shows the contract: the overview script renders inputs, output keys and dims from graph.contract with the viewer escaping', opts, () => {
+  const out = scanInto(fixture('contract/dict-out'));
+  assert.equal(build(fixture('contract/dict-out'), out).status, 0);
+  const { html, graph } = readMap(out);
+  assert.match(html, /function contractSections\(ct\)/);
+  assert.ok(graph.contract.inputs.length === 5 && html.includes('"contractInputs":5'));
+  assert.equal(html.includes('<script>alert(1)'), false, 'docstring text is data in the page');
+});

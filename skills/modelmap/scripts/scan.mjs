@@ -23,6 +23,7 @@ import { annotate, stats } from './lib/params.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { readWeights, expectKeys, crossCheck } from './lib/safetensors.mjs';
 import { foldTree, pattern } from './lib/fold.mjs';
+import { DIM_NAMES, HEAD_DIM_ATTRS, buildContract } from './lib/contract.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv.slice(2), { multi: ['arg', 'weights'], flags: ['json'] });
@@ -67,7 +68,8 @@ function runPyscan(job) {
   fail('python3 was not found. modelmap reads Python code with python3 (standard library only). Install Python 3.9 or newer.');
 }
 
-const scan = runPyscan({ root, files: listed.files, rootClass: args['root-class'] || null, args: rootArgs, config: config && { data: config.data, lines: config.lines, file: config.file, arg: config.arg } });
+// dimNames: the names of the dimension table (lib/contract.mjs); pyscan.py reports where it saw them
+const scan = runPyscan({ root, files: listed.files, rootClass: args['root-class'] || null, args: rootArgs, config: config && { data: config.data, lines: config.lines, file: config.file, arg: config.arg }, dimNames: DIM_NAMES, dimAttrs: HEAD_DIM_ATTRS });
 if (scan.fatal) fail(scan.fatal);
 if (!scan.root) fail(scan.rootClass ? 'class ' + scan.rootClass + ' was not found' : 'No torch.nn.Module class found in ' + listed.files.length + ' Python files.');
 if (config) {
@@ -121,6 +123,14 @@ if (scan.weights) {
   for (const x of w.notes || []) out.push('        note: ' + x);
 }
 out.push('BYTES   ' + fmtNum(r.bytes.fp32) + ' B in fp32' + (r.params.lowerBound ? ' or more' : ''));
+const ct = buildContract(scan);
+if (ct) {
+  const ins = ct.inputs.map((x) => x.name + (x.optional ? '?' : '')).join(', ');
+  out.push('INPUTS  ' + ct.inputs.length + (ins ? '  (' + (ins.length > 160 ? ins.slice(0, 159) + '…' : ins) + ')' : '') + '  forward() at ' + ct.forward.file + ':' + ct.forward.line);
+  const o = ct.output;
+  out.push('OUTPUT  ' + (o.type || '(no annotation)') + (o.keys.length ? '  ' + o.keys.length + (o.keysMore ? '+' : '') + ' keys' : o.names ? '  (' + o.names.join(', ') + ')' : ''));
+  if (ct.dims.length) out.push('DIMS    ' + ct.dims.map((d) => d.sym + '=' + d.value + ' (' + d.name + (d.src === 'config' ? ', config' : '') + ')').join('  '));
+}
 out.push('READ    ' + scan.stats.files + ' Python files, ' + scan.stats.classes + ' classes, ' + st.modules + ' module instances (' + st.shared + ' shared)' + (scan.errors?.length ? ', ' + scan.errors.length + ' files skipped' : ''));
 const others = scan.candidates.filter((c) => c.hasForward && !(c.name === r.cls && c.file === r.file)).slice(0, 4);
 if (others.length) out.push('OTHERS  ' + others.map((c) => c.name + ' (' + c.file + ')').join(', ') + '  (map another with --root-class path.py:Name)');
