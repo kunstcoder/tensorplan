@@ -1,3 +1,4 @@
+<!-- Derived from floorplan v0.11.0 (MIT): skills/floorplan/assets/viewer.html -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -58,6 +59,7 @@
   --n-ui: #7cc4ff; --n-service: #b49cff; --n-worker: #f0c36b; --n-library: #6fd7a8; --n-feature: #8fb4ff; --n-data: #63d2b8; --n-config: #a3a3a3;
   --n-test: #f19ac7; --n-script: #f5a66b; --n-infra: #f28b8b; --n-external: #e3a6f0; --n-misc: #8b8b8b; --n-dir: #a3a3a3; --n-file: #a3a3a3;
   --n-module: #a3a3a3; --n-symbol: #c7b8ff; --n-route: #7aa7ff; --n-connector: #8b8b8b;
+  /* modelmap: module kinds */ --n-model: #f0c36b; --n-block: #8fb4ff; --n-attention: #b49cff; --n-mlp: #6fd7a8; --n-norm: #63d2b8; --n-embed: #f5a66b; --n-linear: #7cc4ff; --n-other: #a3a3a3;
   --m-GET: #6fd7a8; --m-POST: #7aa7ff; --m-PUT: #f0c36b; --m-PATCH: #c7a3ff; --m-DELETE: #f28b8b; --m-CALL: #6fcfd9; --m-ANY: #a3a3a3;
   --panel-w: 360px; --pw: calc(var(--panel-w) + 32px); --gutter: 28px;
   color-scheme: dark;
@@ -86,6 +88,7 @@
   --n-ui: #1f7ac4; --n-service: #7a5ad8; --n-worker: #a8710c; --n-library: #1a8a5b; --n-feature: #3b6fd1; --n-data: #0f8a76; --n-config: #666666;
   --n-test: #c43c86; --n-script: #c06a1d; --n-infra: #c94a4a; --n-external: #a24dbb; --n-misc: #666666; --n-dir: #666666; --n-file: #666666;
   --n-module: #666666; --n-symbol: #6a55c4; --n-route: #2f6fe0; --n-connector: #666666;
+  /* modelmap: module kinds */ --n-model: #a8710c; --n-block: #3b6fd1; --n-attention: #7a5ad8; --n-mlp: #1a8a5b; --n-norm: #0f8a76; --n-embed: #c06a1d; --n-linear: #1f7ac4; --n-other: #666666;
   --m-GET: #1a8a5b; --m-POST: #2f6fe0; --m-PUT: #a8710c; --m-PATCH: #7a4fd0; --m-DELETE: #c94a4a; --m-CALL: #0d7f8c; --m-ANY: #666666;
 }
 :root[data-theme="light"] .mark { filter: invert(1); } /* the logo image is white, so it is inverted to black */
@@ -202,6 +205,18 @@ svg.lod-low .foot .meta { visibility: hidden; }
 .rw { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; line-height: 1; color: var(--recent); background: color-mix(in srgb, var(--recent) 13%, transparent); border-radius: 999px; padding: 4px 8px 4px 7px; white-space: nowrap; }
 .rw::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .rw.soft { font-weight: 500; }
+/* modelmap: a module card's class and arguments, its pattern letter, the source tag of its count and ×N */
+.mm-cls { font-family: var(--mono); font-size: 12px; color: var(--text-2); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-args { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-letter { flex: none; font-family: var(--mono); font-size: 11px; font-weight: 700; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 7px; display: grid; place-items: center; color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); }
+.mm-r { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.mm-src { font-size: 10.5px; font-weight: 600; letter-spacing: .02em; line-height: 1; padding: 4px 7px; border-radius: 999px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--hair-2); }
+.mm-src.config { color: var(--n-block); } .mm-src.weights { color: var(--ok); } .mm-src.run { color: var(--n-attention); }
+.mm-xn { font-size: 11px; font-weight: 700; line-height: 1; padding: 4px 8px; border-radius: 999px; color: var(--on-text); background: var(--on); font-variant-numeric: tabular-nums; }
+.mm-chk { font-size: 11px; font-weight: 700; line-height: 1; padding: 4px 7px; border-radius: 999px; }
+.mm-chk.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); } .mm-chk.ok.part { opacity: .7; }
+.mm-chk.bad { color: var(--err-text); background: color-mix(in srgb, var(--err-text) 16%, transparent); }
+svg.lod-low .mm-args, svg.lod-low .mm-src { visibility: hidden; }
 body.no-recent .rw { display: none; }
 body.no-recent .card.recent, body.no-recent .card.recent-in { box-shadow: var(--shadow-card); }
 svg.lod-low .rw { font-size: 18px; padding: 6px 12px; }
@@ -552,7 +567,7 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
   header #zoom { position: static; flex: none; flex-direction: row; padding: 0; gap: 0; border-radius: 22px; } /* moved into the top row, left of the search icon */
   /* menus open as full-width cards under the bar */
   #flowmenu, #legend { position: fixed; top: calc(var(--hh, 56px) + 4px); left: 8px; right: 8px; width: auto; max-height: 60vh; overflow: auto; }
-  body #tour, body #cloud-card { left: 8px; right: 8px; width: auto; }
+  body #tour { left: 8px; right: 8px; width: auto; } /* modelmap: the #cloud-card selector went with Floorplan Cloud */
 }
 @media (prefers-reduced-motion: reduce) and (max-width: 999px), (prefers-reduced-motion: reduce) and (pointer: coarse) {
   #panel, body.no-panel #panel, #viewport.anim, #ask, #flowbar, #zoom button { transition: none; }
@@ -588,7 +603,7 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
 </div>
 <header>
   <div class="hl">
-    <div class="brand"><img class="mark" src="__FLOORPLAN_LOGO__" alt="Floorplan" title="Floorplan"><span id="proj-name"></span></div>
+    <div class="brand"><img class="mark" src="__FLOORPLAN_LOGO__" alt="modelmap" title="modelmap"><span id="proj-name"></span></div>
     <button class="btn icon" id="btn-up" title="Up one level (Backspace)" aria-label="Up one level" hidden><svg class="i" viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></svg></button>
     <nav id="crumbs"></nav>
   </div>
@@ -635,6 +650,8 @@ const Cap = (t) => t[0].toUpperCase() + t.slice(1);
 if (!G) { document.body.innerHTML = '<p style="padding:2rem">No data. Run build.mjs.</p>'; return; }
 // a blueprint: planned from a PRD, so its files don't exist yet (no line counts, nothing to open in an editor)
 const PLAN = !!G.meta.blueprint;
+// modelmap: a model map (graph.json from modelmap's build.mjs): module nodes carry their facts in n.m
+const MODEL = /^modelmap\//.test(G.schema || '');
 // an exported copy (serve.mjs --export, or the Export button): read-only, for people without Claude or Codex
 const EXPORTED = G.meta.exported || null;
 // set when an exported copy is embedded in a page that takes its "Ask about this" (see askHost)
@@ -772,6 +789,14 @@ const P = {
   left: '<path d="m15 18-6-6 6-6"/>',
   right: '<path d="m9 18 6-6-6-6"/>',
 };
+// modelmap: icons for the module kinds
+Object.assign(P, { model: P.library, block: P.feature,
+  attention: '<path d="M2.5 12C5 7.5 8.2 5 12 5s7 2.5 9.5 7c-2.5 4.5-5.7 7-9.5 7s-7-2.5-9.5-7z"/><circle cx="12" cy="12" r="3"/>',
+  mlp: '<circle cx="5" cy="7" r="2"/><circle cx="5" cy="17" r="2"/><circle cx="19" cy="12" r="2"/><path d="m7 7.8 10 3.4M7 16.2l10-3.4"/>',
+  norm: '<path d="M3 20h18"/><path d="M4 20c3.5 0 4.5-14 8-14s4.5 14 8 14"/>',
+  embed: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16"/>',
+  linear: '<path d="M8 4H5v16h3M16 4h3v16h-3M9 12h6"/>',
+  other: '<rect x="5" y="5" width="14" height="14" rx="4"/>' });
 const icon = (k) => `<svg viewBox="0 0 24 24">${P[k] || P.file}</svg>`;
 const iconI = (k) => `<svg class="i" viewBox="0 0 24 24">${P[k] || P.file}</svg>`;
 const symIcon = (kind) => (['class', 'interface', 'protocol', 'actor', 'struct', 'type', 'enum', 'record', 'trait', 'object'].includes(kind) ? 'class' : 'function');
@@ -1001,18 +1026,36 @@ const SIZES = { node: [300, 128], dir: [272, 110], file: [284, 110], module: [28
 const NOTE_H = 64;
 const FOOT_H = 30;   // the footer row: size on the left, recent-work pill on the right
 const TITLE2_H = 10; // a title that wraps onto a second line
+const MM_LINE_H = 23; // modelmap: one line of class or arguments under a module's title, with its gap
 const GUTTER = 28; // room around each card for its shadow, selection ring and hover lift (matches --gutter)
 /** Footer pieces: the card's size (modules / files / endpoints) and its recent-work pill. Empty when neither applies. */
+// modelmap: parameter counts as cards show them: 1.2M, 74,112; ≥ for a lower bound, ? when nothing is known
+const mmCount = (v) => v >= 1e9 ? (v / 1e9).toFixed(1) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Number(v).toLocaleString('en-US');
+const mmParams = (p) => !p || p.v === null || p.v === undefined || (p.lowerBound && !p.v) ? '?' : (p.lowerBound ? '≥ ' : '') + mmCount(p.v);
+/** modelmap: the class in small monospace and up to 3 simple arguments (positional ones bare, the rest name=value). */
+function mmSub(m) {
+  const simple = Object.entries(m.args || {}).filter(([, r]) => ['number', 'string', 'boolean'].includes(typeof r?.v)).slice(0, 3)
+    .map(([k, r]) => { const v = typeof r.v === 'string' ? JSON.stringify(r.v.length > 24 ? r.v.slice(0, 23) + '…' : r.v) : String(r.v); return /^\d+$/.test(k) ? v : `${k}=${v}`; });
+  return { html: `<div class="mm-cls">${h(m.cls)}</div>${simple.length ? `<div class="mm-args">${h(simple.join(' · '))}</div>` : ''}`, lines: simple.length ? 2 : 1 };
+}
 function cardFoot(item) {
   const i = info(item);
   let size = '';
-  if (i.type === 'node' && i.n.kind !== 'external') { const sub = (kids.get(item) || []).filter((k) => k.startsWith('n:')).length; size = sub ? plural(sub, 'module') : plural(statsOf(item).files, 'file'); }
+  const m = i.type === 'node' ? i.n.m : null; // modelmap
+  if (m) size = m.alias !== undefined ? 'shared' : mmParams(m.params);
+  else if (i.type === 'node' && i.n.kind !== 'external') { const sub = (kids.get(item) || []).filter((k) => k.startsWith('n:')).length; size = sub ? plural(sub, 'module') : plural(statsOf(item).files, 'file'); }
   else if (i.type === 'dir') size = plural(statsOf(item).files, 'file');
   else if (i.type === 'module') size = 'this file';
   else if (i.type === 'file') { const nr = (routesByFile.get(i.f.p) || []).length; size = nr ? plural(nr, 'endpoint') : ''; }
   const rec = recentOf(item), inside = recentIn.get(item.startsWith('m:') ? 'f:' + item.slice(2) : item);
-  const pill = rec ? `<span class="rw">${recentLabel(rec)}</span>` : inside ? `<span class="rw soft">${inside.length} changed</span>` : '';
-  return size || pill ? `<div class="foot">${size ? `<span class="meta">${size}</span>` : '<span></span>'}${pill}</div>` : '';
+  let pill = rec ? `<span class="rw">${recentLabel(rec)}</span>` : inside ? `<span class="rw soft">${inside.length} changed</span>` : '';
+  // modelmap: on the right, the source tag of the count and ×N for a folded run
+  // modelmap: the weights file check, ✓ or ✗; a folded run is ✗ when any member is not ok (m.fold.failing)
+  const chk = !m?.check ? '' : m.check.ok === false
+    ? `<span class="mm-chk bad" title="${h(m.fold?.failing?.length ? `weights differ in ${m.fold.failing[0].member}` : 'the weights file differs from the code')}">✗</span>`
+    : `<span class="mm-chk ok${m.check.partial ? ' part' : ''}" title="${m.check.partial ? 'matches the weights file where the code is known' : 'matches the weights file'}">✓</span>`;
+  if (m) pill = `<span class="mm-r">${pill}${chk}${m.alias !== undefined ? '' : `<span class="mm-src ${hk(m.params?.src || '')}">${h(m.params?.src || 'code')}</span>`}${m.fold ? `<span class="mm-xn">×${h(m.fold.n)}</span>` : ''}</span>`;
+  return size || pill ? `<div class="foot">${size ? `<span class="meta">${h(size)}</span>` : '<span></span>'}${pill}</div>` : '';
 }
 /** Extra height a card needs beyond its base size: a footer, and a title long enough to wrap. */
 function cardExtraH(item) {
@@ -1020,7 +1063,8 @@ function cardExtraH(item) {
   const [w] = SIZES[i.type] || SIZES.file;
   const name = i.type === 'route' ? i.r.name : i.type === 'symbol' ? i.s[0] : i.name;
   const room = w - 36 - (i.type === 'route' ? 0 : 40); // padding, and the icon beside the title
-  return (cardFoot(item) ? FOOT_H : 0) + (textW(name, 15, 600) > room ? TITLE2_H : 0);
+  const mm = i.type === 'node' && i.n.m ? mmSub(i.n.m).lines * MM_LINE_H + (i.n.m.letter ? 30 : 0) : 0; // modelmap: class and argument lines, room for the letter
+  return (cardFoot(item) ? FOOT_H : 0) + (textW(name, 15, 600) > room - (i.type === 'node' && i.n.m?.letter ? 32 : 0) ? TITLE2_H : 0) + mm;
 }
 function cardHTML(item) {
   const i = info(item);
@@ -1031,6 +1075,7 @@ function cardHTML(item) {
     if (n.kind === 'external') cls += ' external';
     head = `<span class="ico">${icon(n.kind)}</span><div class="title">${h(n.label)}</div>`;
     desc = dsc(n.summary, 3);
+    if (n.m) { if (n.m.letter) head += `<span class="mm-letter" title="pattern letter">${h(n.m.letter)}</span>`; title = mmSub(n.m).html; } // modelmap
   } else if (i.type === 'dir') {
     head = `<span class="ico">${icon('dir')}</span><div class="title">${h(i.name)}</div>`;
     desc = dsc(i.d.files.slice().sort((a, b) => b.loc - a.loc).slice(0, 4).map((f) => f.name).join(', ') + (i.d.files.length > 4 ? ', …' : ''), 2);
@@ -1067,7 +1112,7 @@ function cardTip(id) {
   const i = info(id);
   const st = statsOf(id);
   const kind = i.type === 'node' ? i.kind : i.type === 'route' ? 'endpoint' : i.type === 'symbol' ? i.symKind : i.type === 'module' ? 'file' : i.type;
-  const where = i.type === 'node' ? (i.n.paths || []).join('\n') : i.type === 'route' ? `${i.f.p}${i.r.h ? ` · ${i.r.h}()` : ''}` : i.path || '';
+  const where = i.type === 'node' ? (i.n.m ? `${i.n.m.cls}${i.n.m.def ? ` · ${i.n.m.def.file}:${i.n.m.def.line ?? ''}` : ''}` : (i.n.paths || []).join('\n')) : i.type === 'route' ? `${i.f.p}${i.r.h ? ` · ${i.r.h}()` : ''}` : i.path || '';
   const size = !st?.files ? '' : PLAN ? (i.type === 'file' || i.type === 'module' ? 'planned' : plural(st.files, 'planned file')) : i.type === 'file' || i.type === 'module' ? `${fmt(st.loc)} lines` : `${plural(st.files, 'file')} · ${fmt(st.loc)} lines`;
   const hints = [drillable(id) && state.container !== id ? '<span><span class="kbd">2×click</span> open</span>' : '', '<span><span class="kbd">right-click</span> more</span>'].join('');
   return `<div class="tt">${h(i.name)}</div><div class="td" style="text-transform:capitalize">${h(kind)}${size ? ` · ${size}` : ''}</div>${where ? `<div class="tp">${h(where)}</div>` : ''}${recentTip(id)}<div class="th">${hints}</div>`;
@@ -1103,6 +1148,11 @@ async function layout(view) {
   for (const c of view.connectors) {
     children.push({ id: c.id, width: clamp(textW(info(c.entity).name, 13) + 84, 150, 320), height: Math.max(42, (deg.get(c.id) || 0) * 7 + 14),
       layoutOptions: { 'elk.layered.layering.layerConstraint': c.side === 'in' ? 'FIRST_SEPARATE' : 'LAST_SEPARATE' } });
+  }
+  // modelmap: a model view with no connections keeps the modules in the order the code makes them, row by row
+  if (MODEL && !view.edges.length && !view.connectors.length) {
+    const r = svg.getBoundingClientRect();
+    return elk.layout({ id: 'g', children, edges: [], layoutOptions: { 'elk.algorithm': 'rectpacking', 'elk.aspectRatio': String(clamp((r.width || 1400) / (r.height || 900), 1, 3)), 'elk.rectpacking.orderBySize': 'false', 'elk.spacing.nodeNode': '32', 'elk.padding': '[top=40,left=40,bottom=40,right=40]' } });
   }
   return elk.layout({
     id: 'g', children,
@@ -1699,12 +1749,12 @@ function overviewPanel() {
   const p = G.project;
   const tops = kids.get('root') || [];
   const undescribed = G.files.filter((f) => f.auto).length + routes.filter((r) => r.auto).length;
-  return `<div class="sec"><div class="ph"><span class="ico" style="--c:var(--accent)">${icon('feature')}</span><span class="kind">${PLAN ? 'Blueprint' : 'Codebase'}</span></div><h2 class="pt">${h(p.name)}</h2>${p.summary ? `<p class="pd">${h(p.summary)}</p>` : ''}
-      <div class="stats" style="margin-top:14px"><div><b>${fmt(G.meta.counts.files)}</b><span>${PLAN ? 'planned files' : 'files'}</span></div>${PLAN ? `<div><b>${fmt((G.screens || []).length)}</b><span>screens</span></div>` : `<div><b>${fmt(G.meta.counts.loc)}</b><span>lines</span></div>`}<div><b>${fmt(routes.length)}</b><span>endpoints</span></div></div>
+  return `<div class="sec"><div class="ph"><span class="ico" style="--c:var(--accent)">${icon('feature')}</span><span class="kind">${PLAN ? 'Blueprint' : MODEL ? 'Model' : 'Codebase'}</span></div><h2 class="pt">${h(p.name)}</h2>${p.summary ? `<p class="pd">${h(p.summary)}</p>` : ''}
+      ${MODEL ? `<div class="stats" style="margin-top:14px"><div><b>${fmt(G.meta.counts.modules || 0)}</b><span>modules</span></div></div>` /* modelmap: module counts; parameters come from ui/70-model.js */ : `<div class="stats" style="margin-top:14px"><div><b>${fmt(G.meta.counts.files)}</b><span>${PLAN ? 'planned files' : 'files'}</span></div>${PLAN ? `<div><b>${fmt((G.screens || []).length)}</b><span>screens</span></div>` : `<div><b>${fmt(G.meta.counts.loc)}</b><span>lines</span></div>`}<div><b>${fmt(routes.length)}</b><span>endpoints</span></div></div>`}
       ${undescribed ? `<div class="callout">${undescribed} files and endpoints still use generated names. Run the skill again to describe them.</div>` : ''}</div>
     ${systemsSection(tops)}
     ${listSec('Guided flows', G.flows.map((f) => `<a class="row" data-flow="${hk(f.id)}"><span class="dot" style="background:var(--accent)"></span><span class="rt"><div class="rn">${h(f.title)}</div>${f.description ? `<div class="rd">${h(f.description)}</div>` : ''}</span><span class="rc">${f.steps.length} steps</span></a>`))}
-    ${listSec('Repositories', G.meta.repos.map((r) => `<div class="row" style="cursor:default"><span class="dot" style="background:var(--text-4)"></span><span class="rt"><div class="rn">${h(r.name)}</div><div class="rp">${h(r.branch || '')} @ ${h((r.head || '').slice(0, 7))}</div></span></div>`))}
+    ${listSec('Repositories', (G.meta.repos || []).map((r) => `<div class="row" style="cursor:default"><span class="dot" style="background:var(--text-4)"></span><span class="rt"><div class="rn">${h(r.name)}</div><div class="rp">${r.head ? `${h(r.branch || '')} @ ${h(r.head.slice(0, 7))}` : 'not a git repo when the map was built' /* modelmap: meta.repos without a commit */}</div></span></div>`))}
     ${p.entrypoints?.length ? listSec('Entrypoints', p.entrypoints.filter((e) => files.has(e)).map((e) => rowFor('f:' + e))) : ''}
     <div class="sec" style="color:var(--text-3);line-height:1.7;font-size:12px">Click a card to inspect it · double-click to open it<br><span class="kbd">/</span> search · <span class="kbd">⌫</span> up · <span class="kbd">F</span> fit · <span class="kbd">P</span> inspector</div>`;
 }

@@ -1,5 +1,8 @@
 // Parameter totals for a scanned module tree. A total with an unknown part is a lower bound (shown as ≥).
 // A module that two paths share counts once: the second path is an alias with zero parameters.
+// Source tags: node.params.src is the weakest source of the parts (code < config < weights < run). A part that
+// used no value (a layer with no parameters, a module with no direct nn.Parameter) is neutral: it does not
+// lower the source. A node whose every part is neutral shows "code".
 import { layerParams, weightParams, Unknown } from './layers.mjs';
 
 const RANK = { code: 0, config: 1, weights: 2, run: 3 };
@@ -11,7 +14,8 @@ export function sum(parts) {
   const known = parts.filter((p) => p.v !== null);
   const total = known.reduce((s, p) => s + p.v, 0);
   const unknown = parts.length - known.length;
-  const src = known.length ? weakest(known) : 'code';
+  const ranked = known.filter((p) => p.src in RANK);
+  const src = ranked.length ? weakest(ranked) : 'code';
   // a part that is itself a lower bound makes the total a lower bound
   if (unknown === 0 && !parts.some((p) => p.lowerBound)) return { v: total, src };
   const why = parts.find((p) => p.why)?.why || (unknown + (unknown === 1 ? ' part is unknown' : ' parts are unknown'));
@@ -30,46 +34,61 @@ const shapeNumel = (shape) => {
   return dims.reduce((s, x) => s * x, 1);
 };
 
+// the weaker of two sources, where null is neutral
+const weaker = (a, b) => (a === null ? b : b === null ? a : RANK[b] < RANK[a] ? b : a);
+
+/** The parameters a module holds itself: { v, src } where src is null when no value was used. */
 function ownParams(node) {
   switch (node.kind) {
     case 'torch': {
-      let v = layerParams(node.cls, node.pos || [], node.kw || {});
+      const info = {};
+      let v = layerParams(node.cls, node.pos || [], node.kw || {}, info);
       // a layer that shares its weight with another path keeps only the other layer's copy
       if (node.tied?.weight) v -= weightParams(node.cls, node.pos || [], node.kw || {});
-      return { v };
+      return { v, src: info.src };
     }
     case 'external':
-      if (NO_PARAMS_EXTERNAL.has(node.fq)) return { v: 0 };
+      if (NO_PARAMS_EXTERNAL.has(node.fq)) return { v: 0, src: null };
       throw new Unknown(node.why || 'class is not in the scanned repo');
     case 'unknown': throw new Unknown(node.why || 'module is not known');
     default: {
-      let v = 0;
-      for (const p of node.params || []) v += shapeNumel(p.shape);
-      if (node.baseLayer) v += layerParams(node.baseLayer.cls, node.baseLayer.pos || [], node.baseLayer.kw || {});
-      return { v };
+      let v = 0, src = null;
+      for (const p of Array.isArray(node.params) ? node.params : []) { v += shapeNumel(p.shape); src = weaker(src, p.src || 'code'); }
+      if (node.baseLayer) {
+        const info = {};
+        v += layerParams(node.baseLayer.cls, node.baseLayer.pos || [], node.baseLayer.kw || {}, info);
+        src = weaker(src, info.src);
+      }
+      return { v, src };
     }
   }
 }
 
 /** Fill node.params = { v, src, lowerBound?, why? } and node.own on every node of the tree. Returns node.params. */
 export function annotate(node) {
+  return walk(node).params;
+}
+
+// returns { params, src } where src is the ranked source of the subtree, or null when every part is neutral
+function walk(node) {
   const parts = [];
   let own = 0;
-  try { own = ownParams(node).v; parts.push({ v: own, src: 'code' }); }
+  try { const o = ownParams(node); own = o.v; parts.push(o.src ? { v: own, src: o.src } : { v: own }); }
   catch (e) { if (!(e instanceof Unknown)) throw e; parts.push({ v: null, why: e.message }); node.why = node.why || e.message; }
   for (const c of node.children || []) {
     if (c.alias !== undefined) { c.params = { v: 0, src: 'code', shared: true, aliasOf: c.alias }; continue; }
-    const r = annotate(c);
-    parts.push(r.v === null ? r : { v: r.v, src: r.src, lowerBound: r.lowerBound, why: r.why });
+    const { params: r, src } = walk(c);
+    parts.push(r.v === null ? r : { v: r.v, ...(src ? { src } : {}), lowerBound: r.lowerBound, why: r.why });
   }
   if (node.incomplete) parts.push({ v: null, why: (node.notes || ['part of the constructor was skipped'])[0] });
   const total = sum(parts);
+  const ranked = parts.some((p) => p.v !== null && p.src in RANK);
   // keep the first reason that matters; a leaf shows its own reason
   const firstWhy = parts.find((p) => p.why)?.why;
   node.params = { v: total.v, src: total.src, ...(total.lowerBound ? { lowerBound: true, why: firstWhy } : {}) };
   node.own = own;
   node.bytes = { fp32: total.v * 4 };
-  return node.params;
+  return { params: node.params, src: ranked ? total.src : null };
 }
 
 /** Counts for the summary: how much of the tree the scan could resolve. */

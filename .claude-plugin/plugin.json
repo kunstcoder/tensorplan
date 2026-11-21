@@ -1,0 +1,16 @@
+{
+  "name": "modelmap",
+  "version": "0.1.0",
+  "description": "A map of a PyTorch model's structure, read from its source code without running it: the module tree, parameter counts and sizes with the source of every number, repeated blocks folded, and a short description of each class.",
+  "author": {
+    "name": "hyunj"
+  },
+  "keywords": [
+    "pytorch",
+    "model",
+    "architecture",
+    "parameters",
+    "visualization",
+    "map"
+  ]
+}

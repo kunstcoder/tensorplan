@@ -1,0 +1,6 @@
+# TinyGPT, small
+vocab: 50
+context: 8
+layers: 2
+width: 16       # the model width
+bias: true

@@ -3,19 +3,29 @@
 // It reads Python files as text (pyscan.py, stdlib only). It never imports or runs the code it reads.
 //
 // usage: node scan.mjs [root] [--out DIR] [--root-class NAME] [--arg name=<json>]... [--json] [--depth N]
+//                [--config FILE [--config-key a.b] [--config-arg NAME]] [--weights FILE|DIR]...
 //   --out         where scan.json goes (default <root>/modelmap/.cache). Nothing else is written.
 //   --root-class  the class to map, when the scan picks the wrong one
 //   --arg         a value for a required constructor argument of the root class, e.g. --arg dim=256
+//   --config      a .json, .yaml or .yml file whose values go to the root class (values are tagged "config")
+//   --config-key  a dotted path that selects a section of the config, e.g. model.encoder
+//   --config-arg  the parameter of the root __init__ that receives the config object (default: the first
+//                 required one named config, cfg, conf, args, hparams or params). "**" passes the keys as arguments.
+//   --weights     a .safetensors file, a model.safetensors.index.json or a folder of them (repeatable). Only
+//                 the headers are read; the scan checks every key and shape against the code. Pickle files
+//                 (.pt .pth .bin .ckpt .pkl) are not read.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, mapDir, listPythonFiles, fmtNum } from './lib/common.mjs';
+import { parseArgs, mapDir, listPythonFiles, fmtNum, toPosix } from './lib/common.mjs';
 import { annotate, stats } from './lib/params.mjs';
+import { loadConfig } from './lib/config.mjs';
+import { readWeights, expectKeys, crossCheck } from './lib/safetensors.mjs';
 import { foldTree, pattern } from './lib/fold.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const args = parseArgs(process.argv.slice(2), { multi: ['arg'], flags: ['json'] });
+const args = parseArgs(process.argv.slice(2), { multi: ['arg', 'weights'], flags: ['json'] });
 const root = path.resolve(args._[0] || '.');
 const fail = (msg) => { console.error('✗ ' + msg); process.exit(1); };
 if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) fail(root + ' is not a folder');
@@ -32,6 +42,18 @@ for (const a of args.arg || []) {
 const listed = listPythonFiles(root);
 if (!listed.files.length) fail('No Python files found in ' + root);
 
+// --config: read the file here (JSON or the small YAML reader); pyscan.py tags its values with file:line
+const label = (p) => { const r = path.relative(root, p); return toPosix(r && !r.startsWith('..') && !path.isAbsolute(r) ? r : p); };
+let config = null;
+if (args.config !== undefined) {
+  if (args.config === true) fail('--config needs a file');
+  const file = path.resolve(String(args.config));
+  const key = typeof args['config-key'] === 'string' ? args['config-key'] : undefined;
+  const c = loadConfig(file, { key });
+  if (c.error) fail(c.error);
+  config = { data: c.data, lines: c.lines ?? null, file: label(file), arg: typeof args['config-arg'] === 'string' ? args['config-arg'] : null, key };
+} else if (args['config-key'] !== undefined || args['config-arg'] !== undefined) fail('--config-key and --config-arg need --config FILE');
+
 /** Run pyscan.py with python3 in isolated mode (-I): no site packages, no PYTHON* variables. */
 function runPyscan(job) {
   let last;
@@ -45,11 +67,25 @@ function runPyscan(job) {
   fail('python3 was not found. modelmap reads Python code with python3 (standard library only). Install Python 3.9 or newer.');
 }
 
-const scan = runPyscan({ root, files: listed.files, rootClass: args['root-class'] || null, args: rootArgs });
+const scan = runPyscan({ root, files: listed.files, rootClass: args['root-class'] || null, args: rootArgs, config: config && { data: config.data, lines: config.lines, file: config.file, arg: config.arg } });
 if (scan.fatal) fail(scan.fatal);
 if (!scan.root) fail(scan.rootClass ? 'class ' + scan.rootClass + ' was not found' : 'No torch.nn.Module class found in ' + listed.files.length + ' Python files.');
+if (config) {
+  const use = scan.configUse || { arg: null, note: 'the config was not used' };
+  scan.config = { file: config.file, arg: use.arg, ...(config.key ? { key: config.key } : {}), ...(use.note ? { note: use.note } : {}) };
+  if (use.note) (scan.warnings ||= []).push(use.note);
+}
+delete scan.configUse;
+
+// --weights: read the headers before annotate() turns node.params (the direct nn.Parameter list) into a count
+let weights = null, expected = null;
+if (args.weights) {
+  weights = readWeights(args.weights.filter((w) => w !== true).map((w) => path.resolve(String(w))));
+  expected = expectKeys(scan.root);
+}
 
 annotate(scan.root);
+if (weights) scan.weights = crossCheck(scan.root, weights, { expected });
 scan.resolution = stats(scan.root);
 scan.meta = { generatedAt: new Date().toISOString(), root: path.basename(root), files: listed.files.length, via: listed.via, truncated: listed.truncated };
 
@@ -58,14 +94,32 @@ fs.mkdirSync(outDir, { recursive: true });
 const outFile = path.join(outDir, 'scan.json');
 fs.writeFileSync(outFile, JSON.stringify(scan));
 
-if (args.json) { console.log(JSON.stringify(scan)); process.exit(0); }
+if (args.json) {
+  // stdout is the JSON alone; messages go to stderr
+  for (const w of scan.weights?.skipped || []) console.error('pickle checkpoints are not read in the MVP: ' + w);
+  if (scan.config?.note) console.error('config: ' + scan.config.note);
+  console.log(JSON.stringify(scan));
+  process.exit(0);
+}
 
 // ---------- summary ----------
 const P = (p) => (p.v === null || (p.lowerBound && p.v === 0) ? '?' : (p.lowerBound ? '≥ ' : '') + fmtNum(p.v));
 const r = scan.root, st = scan.resolution;
 const out = [];
 out.push('MODEL   ' + r.cls + '  ' + (r.file || '') + ':' + (r.line || ''));
-out.push('PARAMS  ' + P(r.params) + '  [code]' + (r.params.lowerBound ? '  (' + r.params.why + ')' : '  (every part known)'));
+out.push('PARAMS  ' + P(r.params) + '  [' + r.params.src + ']' + (r.params.lowerBound ? '  (' + r.params.why + ')' : '  (every part known)'));
+if (scan.config) out.push('CONFIG  ' + scan.config.file + (scan.config.key ? ' (key ' + scan.config.key + ')' : '') + (scan.config.arg ? '  -> ' + (scan.config.arg === '**' ? 'keyword arguments' : 'argument ' + scan.config.arg) + ' of ' + r.cls : '  not used: ' + scan.config.note));
+if (scan.weights) {
+  const w = scan.weights;
+  const head = w.files.length ? w.files.join(', ') + ': ' + fmtNum(w.tensors) + ' tensors, ' + fmtNum(w.totalParams) + ' values' : 'no file read';
+  const mark = !w.files.length ? '✗ nothing checked' : w.differModules ? '✗ ' + w.differModules + (w.differModules === 1 ? ' module differs, ' : ' modules differ, ') + w.matchedModules + ' match' : '✓ ' + w.matchedModules + ' modules match';
+  out.push('WEIGHTS ' + mark + '  (' + head + ')' + (w.uncheckedModules ? '  ' + w.uncheckedModules + ' modules not checked (shapes not known)' : '') + (w.unmatchedKeys ? '  ' + w.unmatchedKeys + ' keys in the file are not in the code' : ''));
+  for (const x of w.problems.slice(0, 6)) out.push('        ' + x);
+  for (const x of (w.unmatchedSample || []).slice(0, w.differModules ? 0 : 3)) out.push('        not in the code: ' + x);
+  for (const e of w.errors || []) out.push('        ✗ ' + e);
+  for (const s of w.skipped || []) out.push('        pickle checkpoints are not read in the MVP: ' + s);
+  for (const x of w.notes || []) out.push('        note: ' + x);
+}
 out.push('BYTES   ' + fmtNum(r.bytes.fp32) + ' B in fp32' + (r.params.lowerBound ? ' or more' : ''));
 out.push('READ    ' + scan.stats.files + ' Python files, ' + scan.stats.classes + ' classes, ' + st.modules + ' module instances (' + st.shared + ' shared)' + (scan.errors?.length ? ', ' + scan.errors.length + ' files skipped' : ''));
 const others = scan.candidates.filter((c) => c.hasForward && !(c.name === r.cls && c.file === r.file)).slice(0, 4);

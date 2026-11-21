@@ -1,0 +1,10 @@
+trainer:
+  lr: 3.0e-4
+  steps: 1000
+model:
+  tiny:
+    vocab: 50
+    context: 8
+    layers: 2
+    width: 16
+    bias: true

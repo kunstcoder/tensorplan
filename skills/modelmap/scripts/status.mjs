@@ -1,52 +1,61 @@
 #!/usr/bin/env node
-// Prints whether a floorplan already exists here and how stale it is. Never fails.
-// usage: node status.mjs [root] [--json]
-// --json prints one JSON object (floorplan/status-result@1) with "state": none | unbuilt | blueprint-started |
-// blueprint | map, plus the text as "text".
+// Derived from floorplan v0.11.0 (MIT): skills/floorplan/scripts/status.mjs
+// Prints whether a model map already exists here and how stale it is. Never fails and never writes.
+// usage: node status.mjs [root] [--out DIR] [--json]
+// --json prints one JSON object (modelmap/status-result@1) with "state": none | unbuilt | map, plus the
+// text as "text". unbuilt: a scan (<map>/.cache/scan.json) but no graph.json.
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, mapDir, LEGACY_MAP_DIR, isMapDir, parseArgs, unattendedMode, printJson, readJsonFile } from './lib/common.mjs';
+import { git, mapDir, parseArgs, unattendedMode, printJson, readJsonFile, fmtNum } from './lib/common.mjs';
 
-const args = parseArgs(process.argv.slice(2));
+const args = parseArgs(process.argv.slice(2), { flags: ['json', 'unattended'] });
 unattendedMode(args);
-const SCHEMA = 'floorplan/status-result@1';
-const data = { schema: SCHEMA, ok: true, state: 'none', legacy: false };
+const SCHEMA = 'modelmap/status-result@1';
+const data = { schema: SCHEMA, ok: true, state: 'none' };
 const lines = [];
+const num = (v) => (typeof v === 'number' ? fmtNum(v) : '?');
 try {
   const root = path.resolve(args._[0] || '.');
-  const legacy = !fs.existsSync(path.join(root, 'floorplan')) && isMapDir(path.join(root, LEGACY_MAP_DIR));
-  data.legacy = legacy;
-  if (legacy) lines.push(`(a map from before the rename is in ${LEGACY_MAP_DIR}/; the next scan, build or refresh moves it to floorplan/)`);
-  const dir = legacy ? path.join(root, LEGACY_MAP_DIR) : mapDir(root, { migrate: false });
+  const dir = args.out ? path.resolve(String(args.out)) : mapDir(root);
+  const rel = path.relative(root, dir).replace(/\\/g, '/') || '.';
+  data.mapDir = rel;
   const graphFile = path.join(dir, 'graph.json');
-  const hasArch = fs.existsSync(path.join(dir, 'architecture.json'));
+  const scanFile = path.join(dir, '.cache', 'scan.json');
   if (!fs.existsSync(graphFile)) {
-    const hasPlan = fs.existsSync(path.join(dir, 'plan.json'));
-    data.state = hasPlan ? 'blueprint-started' : hasArch ? 'unbuilt' : 'none';
-    lines.push(hasPlan ? 'a blueprint was started (plan.json) but never drawn: write architecture.json if it is missing, then run plan.mjs and build.mjs.' : hasArch ? 'architecture.json exists but was never built: run build.mjs.' : 'none: no floorplan here yet (fresh run).');
+    if (fs.existsSync(scanFile)) {
+      data.state = 'unbuilt';
+      let what = '';
+      try {
+        const s = readJsonFile(scanFile);
+        Object.assign(data, { scannedAt: s.meta?.generatedAt || null, rootClass: s.root?.cls || null });
+        what = ` of ${s.root?.cls || '?'}${s.meta?.generatedAt ? ` (${s.meta.generatedAt})` : ''}`;
+      } catch { what = ' (it could not be read)'; }
+      lines.push(`unbuilt: a scan${what} is in ${rel}/.cache/scan.json but no map was built. Write descriptions (describe.mjs), then run build.mjs.`);
+    } else {
+      lines.push('none: no model map here yet (fresh run).');
+    }
   } else {
     const g = readJsonFile(graphFile);
-    Object.assign(data, { builtAt: g.meta.generatedAt, files: g.meta.counts.files, nodes: g.nodes.length, agent: g.meta.agent || null });
-    if (g.meta.blueprint) {
-      data.state = 'blueprint';
-      lines.push(`a blueprint (planned, not built${g.meta.blueprint.source ? `, from ${g.meta.blueprint.source}` : ''}) built ${g.meta.generatedAt}: ${g.meta.counts.files} planned files, ${g.nodes.length} nodes.\nTo change the plan, edit floorplan/plan.json and architecture.json, then run refresh.mjs (it redraws from plan.json). If the code now exists and the user wants a map of it, run refresh.mjs --from-code.`);
-    } else {
-      data.state = 'map';
-      data.repos = [];
-      lines.push(`map built ${g.meta.generatedAt} covering ${g.meta.counts.files} files, ${g.nodes.length} nodes.`);
-      for (const r of g.meta.repos || []) {
-        const abs = path.join(root, r.path);
-        const head = git(abs, ['rev-parse', 'HEAD']);
-        // compared: false when there's no commit to compare (no git repo now, or none when the map was built)
-        if (!head || !r.head) { lines.push(`  ${r.path}: not a git repo now`); data.repos.push({ path: r.path, compared: false }); continue; }
-        const changed = head === r.head ? [] : (git(abs, ['diff', '--name-only', r.head, head]) || '').split('\n').filter(Boolean);
-        const dirty = (git(abs, ['status', '--porcelain']) || '').split('\n').filter(Boolean).length;
-        data.repos.push({ path: r.path, compared: true, sameCommit: head === r.head, changedFiles: changed.length, uncommitted: dirty });
-        lines.push(`  ${r.path}: ${head === r.head ? 'same commit' : `${changed.length} file(s) changed since ${r.head.slice(0, 7)}`}${dirty ? `, ${dirty} uncommitted` : ''}`);
-        if (changed.length) lines.push(`    e.g. ${changed.slice(0, 6).map((p) => (r.path === '.' ? p : `${r.path}/${p}`)).join(', ')}`);
-      }
-      lines.push('A map exists: update it with refresh.mjs (only changed files cost tokens) rather than starting over.');
+    const m = g.meta || {};
+    const c = m.counts || {};
+    data.state = 'map';
+    Object.assign(data, { builtAt: m.generatedAt || null, rootName: m.rootName || null, modules: c.modules ?? null, params: c.params ?? null, unknownParts: c.unknownParts ?? null, nodes: Array.isArray(g.nodes) ? g.nodes.length : null, agent: m.agent || null, repos: [] });
+    lines.push(`map of ${m.rootName || '?'} built ${m.generatedAt || '?'}: ${num(c.modules)} modules, ${num(c.params)} parameters${c.unknownParts ? ` (≥, ${c.unknownParts} unknown parts)` : ''}.`);
+    // the commits the map was built from: meta.repos [{ path, head }] or meta.head for the root alone
+    const repos = Array.isArray(m.repos) ? m.repos : m.head ? [{ path: '.', head: m.head }] : [];
+    if (!repos.length) lines.push('  (the map records no git commit, so it was not compared with the code)');
+    for (const r of repos) {
+      const abs = path.join(root, String(r.path || '.'));
+      const head = git(abs, ['rev-parse', 'HEAD']);
+      // compared: false when there's no commit to compare (no git repo now, or none when the map was built)
+      if (!head || !r.head) { lines.push(`  ${r.path}: not a git repo now`); data.repos.push({ path: r.path, compared: false }); continue; }
+      const changed = head === r.head ? [] : (git(abs, ['diff', '--name-only', r.head, head]) || '').split('\n').filter(Boolean);
+      const dirty = (git(abs, ['status', '--porcelain']) || '').split('\n').filter(Boolean).length;
+      data.repos.push({ path: r.path, compared: true, sameCommit: head === r.head, changedFiles: changed.length, uncommitted: dirty });
+      lines.push(`  ${r.path}: ${head === r.head ? 'same commit' : `${changed.length} file(s) changed since ${r.head.slice(0, 7)}`}${dirty ? `, ${dirty} uncommitted` : ''}`);
+      if (changed.length) lines.push(`    e.g. ${changed.slice(0, 6).map((p) => (r.path === '.' ? p : `${r.path}/${p}`)).join(', ')}`);
     }
+    lines.push('A map exists. After changes to the model, run scan.mjs and build.mjs again; descriptions/ is kept.');
   }
 } catch (e) {
   data.state = 'unknown';

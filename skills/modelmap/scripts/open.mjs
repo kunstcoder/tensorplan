@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+// Derived from floorplan v0.11.0 (MIT): skills/floorplan/scripts/open.mjs
 // Show the map to the user after a build or refresh. Reuses this map's server if it's running (open tabs
 // have already reloaded themselves), restarts it if serve.mjs changed, otherwise starts it in the
 // background and opens a browser tab. Prints the URL and how to stop it.
-// usage: node open.mjs [root] [--no-open] [--port N] [--engine claude|codex] [--model M] [--claude PATH] [--codex PATH]
+// usage: node open.mjs [root] [--out DIR] [--no-open] [--port N] [--engine claude|codex] [--model M] [--claude PATH] [--codex PATH]
 //                      [--editor NAME|LINK]   (the editor "Open in editor" opens, e.g. cursor or "zed://file/{path}:{line}")
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,14 +13,14 @@ import { parseArgs, mapDir, unattendedMode, readJsonFile } from './lib/common.mj
 import { editorTemplate } from '../assets/page-safety.mjs';
 import { cliLabel } from './lib/agent.mjs';
 
-const args = parseArgs(process.argv.slice(2));
+const args = parseArgs(process.argv.slice(2), { flags: ['no-open', 'unattended'] });
 const root = path.resolve(args._[0] || '.');
 // unattended: nobody is there to look, so start nothing and open nothing
 if (unattendedMode(args)) {
-  console.log('Unattended mode: not starting the map\'s server or opening a browser. The map is floorplan/index.html; to look around in it with Ask, run node floorplan/serve.mjs in the codebase.');
+  console.log('Unattended mode: not starting the map\'s server or opening a browser. The map is modelmap/index.html; to look around in it with Ask, run node modelmap/serve.mjs in the repo.');
   process.exit(0);
 }
-const dir = mapDir(root);
+const dir = args.out ? path.resolve(String(args.out)) : mapDir(root);
 const serveFile = path.join(dir, 'serve.mjs');
 const stateFile = path.join(dir, '.cache', 'server.json');
 const rel = path.relative(process.cwd(), dir).replace(/\\/g, '/') || '.';
@@ -92,7 +93,7 @@ if (status.tabs > 0) shown = `already open in ${status.tabs === 1 ? 'a browser t
 else if (args['no-open']) shown = 'not opened in a browser (--no-open): open the URL yourself';
 else shown = openBrowser(s.url) ? 'opened in the browser' : 'could not open a browser: open the URL yourself';
 
-console.log(`FLOORPLAN  ${s.url}  (${shown})`);
+console.log(`MODELMAP  ${s.url}  (${shown})`);
 const CLI = {
   claude: { name: 'the Claude Code CLI', docs: 'https://docs.claude.com/en/docs/claude-code' },
   codex: { name: 'Codex', docs: 'https://developers.openai.com/codex' },

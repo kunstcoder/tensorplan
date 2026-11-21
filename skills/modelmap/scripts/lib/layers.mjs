@@ -1,6 +1,10 @@
-// Parameter counts of torch.nn layers, from their constructor arguments.
-// Every value comes from the code, so the result carries the tag "code". A value that the scan could not
-// know makes the count unknown, with a reason. Buffers (running statistics) are not parameters.
+// Parameter counts of torch.nn layers, from their constructor arguments, and the state_dict keys they hold.
+// A value that the scan could not know makes the count unknown, with a reason. Buffers (running statistics)
+// are not parameters.
+// Source: an argument record may carry src ("config" when it came from a config file or --arg; absent means
+// "code"). layerParams(name, pos, kw, info) sets info.src to the weakest source of the arguments it used
+// (code < config), or null when it used no value (a layer with no parameters). A bool or None argument is
+// not tracked (pyscan.py cannot tag bools), so it neither lowers nor raises the source.
 
 export class Unknown extends Error {}
 
@@ -52,9 +56,26 @@ function ints(rec, what, dims) {
 }
 const prod = (a) => a.reduce((s, x) => s * x, 1);
 
-/** pick(names)(pos, kw): the record of argument i by name or by position. */
-function pick(sig, pos, kw) {
-  return (name) => (kw && kw[name] !== undefined ? kw[name] : pos && pos[sig.indexOf(name)]);
+/** pick(names)(pos, kw): the record of argument i by name or by position. Records that are read go into used. */
+function pick(sig, pos, kw, used) {
+  return (name) => {
+    const r = kw && kw[name] !== undefined ? kw[name] : pos && pos[sig.indexOf(name)];
+    if (r !== undefined && used) used.push(r);
+    return r;
+  };
+}
+
+const RANK = { code: 0, config: 1, weights: 2, run: 3 };
+/** The weakest source of the records used, or null when none carries a tracked value. */
+export function sourceOf(recs) {
+  let w = null;
+  for (const r of recs) {
+    const v = r?.v;
+    if (typeof v === 'boolean' || v === null || v === undefined) continue;
+    const s = r.src || 'code';
+    if (w === null || RANK[s] < RANK[w]) w = s;
+  }
+  return w;
 }
 
 function family(name) {
@@ -64,14 +85,21 @@ function family(name) {
   return null;
 }
 
-/** Parameters of one layer: a number, or throws Unknown(reason). */
-export function layerParams(name, pos = [], kw = {}) {
+/** Parameters of one layer: a number, or throws Unknown(reason). info.src gets the weakest source used. */
+export function layerParams(name, pos = [], kw = {}, info = null) {
+  const used = [];
+  const n = count(name, pos, kw, used);
+  if (info) info.src = sourceOf(used);
+  return n;
+}
+
+function count(name, pos, kw, used) {
   if (NO_PARAMS.has(name)) return 0;
   const fam = family(name);
   const base = fam ? fam[0] : name;
   const sig = SIGS[base];
   if (!sig) throw new Unknown('torch.nn.' + name + ' is not in the layer table');
-  const a = pick(sig, pos, kw);
+  const a = pick(sig, pos, kw, used);
   switch (base) {
     case 'Linear': return int(a('in_features'), 'in_features') * int(a('out_features'), 'out_features') + (bool(a('bias'), true, 'bias') ? int(a('out_features'), 'out_features') : 0);
     case 'Bilinear': return int(a('in1_features'), 'in1_features') * int(a('in2_features'), 'in2_features') * int(a('out_features'), 'out_features') + (bool(a('bias'), true, 'bias') ? int(a('out_features'), 'out_features') : 0);
@@ -115,6 +143,75 @@ export function weightParams(name, pos = [], kw = {}) {
   if (base === 'Embedding') return int(a('num_embeddings'), 'num_embeddings') * int(a('embedding_dim'), 'embedding_dim');
   if (base === 'LayerNorm') return bool(a('elementwise_affine'), true, 'elementwise_affine') ? prod(ints(a('normalized_shape'), 'normalized_shape')) : 0;
   throw new Unknown('the weight of torch.nn.' + name + ' is not in the layer table');
+}
+
+/**
+ * The state_dict entries of one layer: [{ key, shape, buffer? }], or throws Unknown(reason).
+ * key is relative to the layer path. A buffer (running statistics) may be in a file but is not required.
+ */
+export function layerKeys(name, pos = [], kw = {}) {
+  if (NO_PARAMS.has(name)) return [];
+  const fam = family(name);
+  const base = fam ? fam[0] : name;
+  const sig = SIGS[base];
+  if (!sig) throw new Unknown('torch.nn.' + name + ' is not in the layer table');
+  const a = pick(sig, pos, kw);
+  const K = (key, shape) => ({ key, shape });
+  const buf = (key, shape) => ({ key, shape, buffer: true });
+  const withBias = (dflt) => bool(a('bias'), dflt, 'bias');
+  switch (base) {
+    case 'Linear': {
+      const i = int(a('in_features'), 'in_features'), o = int(a('out_features'), 'out_features');
+      return [K('weight', [o, i]), ...(withBias(true) ? [K('bias', [o])] : [])];
+    }
+    case 'Bilinear': {
+      const o = int(a('out_features'), 'out_features');
+      return [K('weight', [o, int(a('in1_features'), 'in1_features'), int(a('in2_features'), 'in2_features')]), ...(withBias(true) ? [K('bias', [o])] : [])];
+    }
+    case 'LayerNorm': {
+      if (!bool(a('elementwise_affine'), true, 'elementwise_affine')) return [];
+      const ns = ints(a('normalized_shape'), 'normalized_shape');
+      return [K('weight', ns), ...(withBias(true) ? [K('bias', ns)] : [])];
+    }
+    case 'RMSNorm': return bool(a('elementwise_affine'), true, 'elementwise_affine') ? [K('weight', ints(a('normalized_shape'), 'normalized_shape'))] : [];
+    case 'GroupNorm': {
+      if (!bool(a('affine'), true, 'affine')) return [];
+      const c = int(a('num_channels'), 'num_channels');
+      return [K('weight', [c]), K('bias', [c])];
+    }
+    case 'BatchNorm':
+    case 'InstanceNorm': {
+      const c = int(a('num_features'), 'num_features');
+      const bn = base === 'BatchNorm';
+      const out = bool(a('affine'), bn, 'affine') ? [K('weight', [c]), K('bias', [c])] : [];
+      if (bool(a('track_running_stats'), bn, 'track_running_stats')) out.push(buf('running_mean', [c]), buf('running_var', [c]), buf('num_batches_tracked', []));
+      return out;
+    }
+    case 'Embedding': return [K('weight', [int(a('num_embeddings'), 'num_embeddings'), int(a('embedding_dim'), 'embedding_dim')])];
+    case 'PReLU': return [K('weight', [a('num_parameters') === undefined ? 1 : int(a('num_parameters'), 'num_parameters')])];
+    case 'Conv':
+    case 'ConvTranspose': {
+      const cin = int(a('in_channels'), 'in_channels'), cout = int(a('out_channels'), 'out_channels');
+      const groups = a('groups') === undefined ? 1 : int(a('groups'), 'groups');
+      const k = ints(a('kernel_size'), 'kernel_size', fam[1]);
+      const w = base === 'Conv' ? [cout, cin / groups, ...k] : [cin, cout / groups, ...k];
+      if (!Number.isInteger(w[1])) throw new Unknown('channels are not divisible by groups');
+      return [K('weight', w), ...(withBias(true) ? [K('bias', [cout])] : [])];
+    }
+    case 'MultiheadAttention': {
+      const e = int(a('embed_dim'), 'embed_dim');
+      const bias = withBias(true);
+      const kd = a('kdim') === undefined || a('kdim').v === null ? e : int(a('kdim'), 'kdim');
+      const vd = a('vdim') === undefined || a('vdim').v === null ? e : int(a('vdim'), 'vdim');
+      const out = kd === e && vd === e ? [K('in_proj_weight', [3 * e, e])] : [K('q_proj_weight', [e, e]), K('k_proj_weight', [e, kd]), K('v_proj_weight', [e, vd])];
+      if (bias) out.push(K('in_proj_bias', [3 * e]));
+      out.push(K('out_proj.weight', [e, e]));
+      if (bias) out.push(K('out_proj.bias', [e]));
+      if (bool(a('add_bias_kv'), false, 'add_bias_kv')) out.push(K('bias_k', [1, 1, e]), K('bias_v', [1, 1, e]));
+      return out;
+    }
+  }
+  throw new Unknown('torch.nn.' + name + ' is not in the layer table');
 }
 
 export const knownLayers = () => [...NO_PARAMS, ...Object.keys(SIGS)];

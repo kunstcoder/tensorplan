@@ -5,8 +5,16 @@
 # runs a small interpreter over that tree: loops, if on known values, defaults, constructor calls.
 # Anything it cannot know stays unknown, with a reason. It never guesses a value.
 #
-# Input : one JSON job on stdin   {"root": "<abs dir>", "files": ["rel/a.py", ...], "rootClass": null, "args": {}}
+# Input : one JSON job on stdin   {"root": "<abs dir>", "files": ["rel/a.py", ...], "rootClass": null, "args": {},
+#          "config": null | {"data": ..., "lines": ..., "file": "cfg.yaml", "arg": null | "config" | "**"}}
 # Output: one JSON document on stdout
+#
+# Source tags: a number or string that came from a config file or from --arg is a tainted value (CInt, CFloat,
+# CStr: subclasses of int, float and str that carry "at", "file:line" or "command line"). They behave as plain
+# values everywhere (range, indexing, comparisons, dict keys) and arithmetic keeps the tag: the result of an
+# operation with a tainted operand is tainted with the at of the first tainted operand. rec() writes
+# src: "config" and that at on the value record. Containers stay plain; their elements are tainted.
+# bool cannot be subclassed, so bool values (and None) are NOT tracked: they carry no source.
 import ast
 import json
 import os
@@ -29,6 +37,118 @@ THIRD_PARTY = {
 }
 NO_LAYER_NS = (".functional", ".init", ".utils", ".parallel", ".modules.utils")
 LOOKS_LIKE_MODULE = ("ctor", "cls", "class", "layer", "block", "module", "norm", "act", "attn", "head")
+
+
+def _taint_at(*vals):
+    for v in vals:
+        if isinstance(v, (CInt, CFloat, CStr)):
+            return v.at
+    return None
+
+
+def taint(r, at):
+    """Wrap a plain result so that it carries at. bool, None and other values stay as they are."""
+    if at is None or isinstance(r, bool) or isinstance(r, (CInt, CFloat, CStr)):
+        return r
+    if type(r) is int:
+        return CInt(r, at)
+    if type(r) is float:
+        return CFloat(r, at)
+    if type(r) is str:
+        return CStr(r, at)
+    if type(r) is tuple:
+        return tuple(taint(x, at) for x in r)
+    return r
+
+
+def _ops(names):
+    def make(name, reflected):
+        def op(self, *other):
+            r = getattr(self._base, name)(self, *other)
+            if r is NotImplemented and self._base is int and other and type(plain(other[0])) is float and hasattr(float, name):
+                r = getattr(float, name)(float(int.__int__(self)), plain(other[0]))   # 3 * 1.5 keeps the tag
+            if r is NotImplemented:
+                return r
+            # the left operand comes first: in a reflected call it is the other value
+            first = (_taint_at(other[0]) if reflected and other else None) or self.at
+            return taint(r, first)
+        return op
+
+    def deco(cls):
+        for nm in names:
+            if hasattr(cls._base, nm):
+                setattr(cls, nm, make(nm, nm.startswith("__r") and nm not in ("__round__", "__rshift__")))
+        return cls
+    return deco
+
+
+_NUM_OPS = ["__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__truediv__", "__rtruediv__",
+            "__floordiv__", "__rfloordiv__", "__mod__", "__rmod__", "__pow__", "__rpow__", "__divmod__", "__rdivmod__",
+            "__lshift__", "__rlshift__", "__rshift__", "__rrshift__", "__and__", "__rand__", "__or__", "__ror__",
+            "__xor__", "__rxor__", "__neg__", "__pos__", "__abs__", "__invert__", "__round__", "__trunc__",
+            "__floor__", "__ceil__"]
+
+
+@_ops(_NUM_OPS)
+class CInt(int):
+    _base = int
+
+    def __new__(cls, v, at):
+        o = int.__new__(cls, v)
+        o.at = at
+        return o
+
+
+@_ops(_NUM_OPS)
+class CFloat(float):
+    _base = float
+
+    def __new__(cls, v, at):
+        o = float.__new__(cls, v)
+        o.at = at
+        return o
+
+
+@_ops(["__add__", "__mul__", "__rmul__", "__mod__", "__rmod__"])
+class CStr(str):
+    _base = str
+
+    def __new__(cls, v, at):
+        o = str.__new__(cls, v)
+        o.at = at
+        return o
+
+    def __radd__(self, other):
+        r = str.__add__(other, self) if isinstance(other, str) else NotImplemented
+        return r if r is NotImplemented else taint(r, _taint_at(other) or self.at)
+
+
+def plain(v):
+    """The plain value of a tainted one (for JSON output)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, CInt):
+        return int.__int__(v)
+    if isinstance(v, CFloat):
+        return float.__float__(v)
+    if isinstance(v, CStr):
+        return str.__str__(v)
+    return v
+
+
+def plain_type(v):
+    return type(plain(v))
+
+
+def taint_tree(v, lines, at_of, depth=0):
+    """Tag every number and string leaf of a config value. lines mirrors v (see lib/yaml.mjs) or is None."""
+    if depth > 40:
+        return v
+    if isinstance(v, dict):
+        return {k: taint_tree(x, lines.get(k) if isinstance(lines, dict) else None, at_of, depth + 1) for k, x in v.items()}
+    if isinstance(v, list):
+        return [taint_tree(x, lines[i] if isinstance(lines, list) and i < len(lines) else None, at_of, depth + 1) for i, x in enumerate(v)]
+    return taint(v, at_of(lines))
 
 
 class Unk:
@@ -468,7 +588,7 @@ class Interp:
         if isinstance(a, (int, float, str, list, tuple, bool)) and isinstance(b, (int, float, str, list, tuple, bool)):
             if op is ast.Pow and isinstance(b, int) and b > 64:
                 return Unk("power too large")
-            return f(a, b)
+            return taint(f(a, b), _taint_at(a, b))
         return Unk("operands are not plain values")
 
     def ev_UnaryOp(self, n, fr):
@@ -479,7 +599,7 @@ class Interp:
             t = truth(v)
             return Unk("truth value unknown") if t is None else (not t)
         if isinstance(v, (int, float, bool)):
-            return {ast.USub: lambda x: -x, ast.UAdd: lambda x: +x, ast.Invert: lambda x: ~x}[type(n.op)](v)
+            return taint({ast.USub: lambda x: -x, ast.UAdd: lambda x: +x, ast.Invert: lambda x: ~x}[type(n.op)](v), _taint_at(v))
         return Unk("unary operator on a non-number")
 
     def ev_BoolOp(self, n, fr):
@@ -518,9 +638,9 @@ class Interp:
                 elif t is ast.GtE:
                     ok = left >= right
                 elif t is ast.Is:
-                    ok = left is right or (left == right and isinstance(left, (int, str, bool)) and type(left) is type(right))
+                    ok = left is right or (left == right and isinstance(left, (int, str, bool)) and plain_type(left) is plain_type(right))
                 elif t is ast.IsNot:
-                    ok = not (left is right or (left == right and isinstance(left, (int, str, bool)) and type(left) is type(right)))
+                    ok = not (left is right or (left == right and isinstance(left, (int, str, bool)) and plain_type(left) is plain_type(right)))
                 elif t is ast.In:
                     ok = left in right
                 elif t is ast.NotIn:
@@ -572,18 +692,20 @@ class Interp:
 
     def ev_JoinedStr(self, n, fr):
         out = ""
+        at = None
         for p in n.values:
             if isinstance(p, ast.Constant):
                 out += str(p.value)
             elif isinstance(p, ast.FormattedValue) and p.format_spec is None and p.conversion in (-1, 115):
                 v = self.ev(p.value, fr)
                 if isinstance(v, (str, int, float, bool)):
-                    out += str(v)
+                    at = at or _taint_at(v)
+                    out += str(plain(v))
                 else:
                     return Unk("f-string with an unknown part")
             else:
                 return Unk("f-string with a format spec")
-        return out
+        return taint(out, at)
 
     def ev_Lambda(self, n, fr):
         return Unk("lambda")
@@ -857,7 +979,9 @@ class Interp:
             if name in ("int", "float", "str", "bool", "abs", "round", "sum", "min", "max", "pow", "divmod", "ord", "chr"):
                 fn = {"int": int, "float": float, "str": str, "bool": bool, "abs": abs, "round": round, "sum": sum,
                       "min": min, "max": max, "pow": pow, "divmod": divmod, "ord": ord, "chr": chr}[name]
-                return fn(*args, **kwargs)
+                r = fn(*args, **kwargs)
+                # int(config.x), str(config.x) and the like keep the tag of their argument
+                return taint(r, _taint_at(*args)) if name in ("int", "float", "str", "abs", "round", "pow", "divmod") else r
             if name in ("list", "tuple"):
                 items = self.to_seq(args[0]) if args else []
                 if items is None:
@@ -1146,6 +1270,7 @@ class Interp:
 def jv(v, depth=0):
     if depth > 6:
         return {"unknown": "too deep"}
+    v = plain(v)
     if v is None or isinstance(v, (bool, int, str)):
         return v
     if isinstance(v, float):
@@ -1155,7 +1280,7 @@ def jv(v, depth=0):
     if isinstance(v, range):
         return [jv(x) for x in list(v)[:64]]
     if isinstance(v, dict):
-        return {str(k): jv(x, depth + 1) for k, x in list(v.items())[:64]}
+        return {str(plain(k)): jv(x, depth + 1) for k, x in list(v.items())[:64]}
     if isinstance(v, Unk):
         return {"unknown": v.why}
     if isinstance(v, Cls):
@@ -1175,10 +1300,32 @@ def jv(v, depth=0):
     return {"unknown": type(v).__name__}
 
 
+def config_at(v, depth=0):
+    """The at of a value that came from a config, or None. A container counts when every number and string
+    in it is tainted (bool and None are not tracked and do not count either way)."""
+    if isinstance(v, (CInt, CFloat, CStr)):
+        return v.at
+    if depth > 6 or not isinstance(v, (list, tuple, dict)):
+        return None
+    first = None
+    for x in (v.values() if isinstance(v, dict) else v):
+        if x is None or isinstance(x, bool):
+            continue
+        a = config_at(x, depth + 1)
+        if a is None:
+            return None
+        first = first or a
+    return first
+
+
 def rec(pair):
     v, at = pair
     out = {"v": jv(v)}
-    if at:
+    cat = config_at(v)
+    if cat is not None:
+        out["src"] = "config"
+        out["at"] = cat
+    elif at:
         out["at"] = at
     return out
 
@@ -1204,7 +1351,12 @@ def mod_json(m, path, seen):
     if m.container:
         j["container"] = m.container
     if m.params:
-        j["params"] = [{"name": n, "shape": jv(list(s)) if not isinstance(s, Unk) else {"unknown": s.why}} for n, s in m.params]
+        j["params"] = []
+        for n, s in m.params:
+            pj = {"name": n, "shape": jv(list(s)) if not isinstance(s, Unk) else {"unknown": s.why}}
+            if not isinstance(s, Unk) and config_at(list(s)) is not None:
+                pj["src"] = "config"
+            j["params"].append(pj)
     if m.tied:
         j["tied"] = {k: t.id for k, t in m.tied.items()}
     if m.base_layer:
@@ -1306,6 +1458,38 @@ def candidates(scan):
     return out
 
 
+CONFIG_NAMES = ("config", "cfg", "conf", "args", "hparams", "params")
+
+
+def config_use(scan, info, cfg, kwargs):
+    """Which parameter of the root __init__ receives the config. Returns {"arg": name | "**" | None, "note"?}."""
+    init, _ = scan.find_init(info)
+    names, required, star = [], [], False
+    if init is not None:
+        a = init.args
+        pos = (list(a.posonlyargs) + list(a.args))[1:]
+        nd = len(pos) - len(a.defaults)
+        names = [p.arg for p in pos] + [p.arg for p in a.kwonlyargs]
+        required = [p.arg for p in pos[:max(nd, 0)]] + [p.arg for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is None]
+        star = a.kwarg is not None
+    want = cfg.get("arg")
+    if want == "**":
+        if not isinstance(cfg.get("data"), dict):
+            return {"arg": None, "note": "--config-arg ** needs a config section that is a map; the config is not used"}
+        return {"arg": "**"}
+    if want:
+        if want in kwargs:
+            return {"arg": None, "note": "--arg " + want + " is given, so the config file is not used for it"}
+        if want not in names and not star:
+            return {"arg": None, "note": info.name + ".__init__ has no parameter " + want + "; the config is not used"}
+        return {"arg": want}
+    for nm in required:
+        if nm in CONFIG_NAMES and nm not in kwargs:
+            return {"arg": nm}
+    return {"arg": None, "note": "no parameter of " + info.name + ".__init__ looks like a config (" + ", ".join(CONFIG_NAMES) +
+            "); the config is not used. Name it with --config-arg NAME, or --config-arg ** to pass its keys as arguments"}
+
+
 def main():
     job = json.loads(sys.stdin.read())
     root = os.path.realpath(job["root"])
@@ -1338,7 +1522,20 @@ def main():
     result["root"] = None
     info = scan.pick_class(name) if name else None
     if info is not None:
-        kwargs = job.get("args") or {}
+        # values given on the command line (--arg) are tagged like config values
+        kwargs = {k: taint_tree(v, None, lambda _l: "command line") for k, v in (job.get("args") or {}).items()}
+        cfg = job.get("config")
+        if cfg:
+            use = config_use(scan, info, cfg, kwargs)
+            result["configUse"] = use
+            if use.get("arg"):
+                f = cfg.get("file") or "config"
+                tagged = taint_tree(cfg.get("data"), cfg.get("lines"), lambda l: f + ":" + str(l) if isinstance(l, int) and not isinstance(l, bool) else f)
+                if use["arg"] == "**":
+                    for k, v in tagged.items():
+                        kwargs.setdefault(str(k), v)
+                else:
+                    kwargs[use["arg"]] = tagged
         fr = Frame(info.fi)
         try:
             mod = scan.instantiate(info, [], [], kwargs, {}, ast.Constant(0, lineno=info.line), fr)

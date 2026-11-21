@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { hasPython, fixture, scanOf, at, script, tmpDir } from './helpers.mjs';
 import { layerParams, Unknown } from '../skills/modelmap/scripts/lib/layers.mjs';
 import { sum, annotate } from '../skills/modelmap/scripts/lib/params.mjs';
+import { runScan, allNodes } from './helpers-scan.mjs';
 
 const opts = { skip: hasPython ? false : 'python3 (3.9 or newer) is not available' };
 
@@ -129,4 +130,65 @@ test('a sum with an unknown part is a lower bound, and a lower bound spreads upw
   const outer = { kind: 'repo', children: [inner], params: [] };
   assert.equal(annotate(outer).lowerBound, true);
   assert.equal(sum([{ v: 1, src: 'code' }, { v: 1, src: 'weights' }]).src, 'code', 'the weakest source wins');
+});
+
+// ---- source tags (src) ----
+
+const records = (n) => [...(n.pos || []), ...Object.values(n.kw || {}), ...Object.values(n.args || {})];
+
+test('a scan with no config and no --arg tags everything code, with the same numbers as before', opts, () => {
+  const s = scanOf(fixture('mini-model'));
+  assert.equal(s.root.params.v, 18740);
+  for (const n of allNodes(s.root)) {
+    if (n.params) assert.equal(n.params.src, 'code', n.path);
+    for (const r of records(n)) assert.equal(r.src, undefined, n.path);
+  }
+  assert.equal(s.config, undefined);
+  assert.equal(s.weights, undefined);
+});
+
+test('--arg values are tagged config, at "command line", and survive arithmetic', opts, () => {
+  const s = scanOf(fixture('mini-model'), ['--root-class', 'tied.py:Tied', '--arg', 'config={"vocab":50,"dim":8,"layers":2}']);
+  assert.deepEqual(at(s.root, 'embed').pos[0], { v: 50, src: 'config', at: 'command line' });
+  assert.deepEqual(at(s.root, 'stack.1').pos, [{ v: 8, src: 'config', at: 'command line' }, { v: 8, src: 'config', at: 'command line' }]);
+  assert.equal(at(s.root, 'stack').params.src, 'config');
+  assert.equal(at(s.root, 'out').params.src, 'config');
+  // pool = Linear(h * w * first * len(rest), config.dim): in_features comes from the code, so pool is code
+  assert.equal(at(s.root, 'pool').pos[0].src, undefined);
+  assert.equal(at(s.root, 'pool').params.src, 'code');
+  assert.equal(s.root.params.src, 'code', 'a total is only as sure as its weakest part');
+  assert.equal(s.root.args.config.src, 'config', 'a dict of tagged values is tagged');
+  assert.equal(s.root.args.size.src, undefined);
+});
+
+test('layerParams reports the weakest source of the arguments it used; bools and layers without values are neutral', () => {
+  const c = (v) => ({ v, src: 'config', at: 'c.yaml:1' });
+  const k = (v) => ({ v });
+  const info = {};
+  assert.equal(layerParams('Linear', [c(10), c(5)], { bias: k(true) }, info), 55);
+  assert.equal(info.src, 'config');
+  layerParams('Linear', [c(10), k(5)], {}, info);
+  assert.equal(info.src, 'code');
+  layerParams('GELU', [], {}, info);
+  assert.equal(info.src, null);
+  layerParams('Dropout', [c(0.1)], {}, info);
+  assert.equal(info.src, null, 'an argument that does not change the count is not read');
+  assert.equal(layerParams('Linear', [c(10), c(5)]), 55, 'the 3-argument form still returns a number');
+  const tree = { kind: 'repo', params: [], children: [
+    { kind: 'torch', cls: 'Linear', pos: [c(4), c(4)], kw: {}, children: [] },
+    { kind: 'torch', cls: 'GELU', pos: [], kw: {}, children: [] },
+  ] };
+  assert.deepEqual(annotate(tree), { v: 20, src: 'config' });
+  assert.equal(tree.children[1].params.src, 'code', 'a neutral node shows code');
+  const mixed = { kind: 'repo', params: [{ name: 'p', shape: [3] }], children: [{ kind: 'torch', cls: 'Linear', pos: [c(4), c(4)], kw: {}, children: [] }] };
+  assert.equal(annotate(mixed).src, 'code');
+  const tagged = { kind: 'repo', params: [{ name: 'p', shape: [3], src: 'config' }], children: [] };
+  assert.equal(annotate(tagged).src, 'config');
+  assert.equal(sum([{ v: 0 }, { v: 0 }]).src, 'code', 'parts without a source give code, not run');
+});
+
+test('the summary shows the source of the total', opts, () => {
+  const a = runScan(fixture('mini-model'));
+  assert.match(a.stdout, /PARAMS {2}≥ 18,740 {2}\[code\]/);
+  assert.doesNotMatch(a.stdout, /CONFIG|WEIGHTS/);
 });
