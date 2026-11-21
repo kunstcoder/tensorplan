@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>modelmap MVP Plan</title>
+<link rel="stylesheet" href="htmlplan.css">
+<script src="htmlplan.js" defer></script>
+<style data-mock-shared>
+.mm{font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;color:#1c1b19;background:#fff;border:1px solid #ddd8cc;border-radius:10px;overflow:hidden}
+.mm .crumb{padding:8px 12px;border-bottom:1px solid #eee9dd;color:#8a8578;font-size:12px}.mm .crumb b{color:#1c1b19}
+.mm .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px}
+.mm .card{border:1px solid #ddd8cc;border-left:3px solid #6b8afd;border-radius:8px;padding:8px 10px;background:#fff}
+.mm .card.n{border-left-color:#8a8578}.mm .card.a{border-left-color:#b49cff}.mm .card.m{border-left-color:#3fb98a}
+.mm .h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.mm .h b{font-size:13.5px}
+.mm .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+.mm .cls{color:#5f5a4f}.mm .dim{color:#8a8578}
+.mm .args{margin-top:2px;color:#8a8578;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+.mm .foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-weight:600;font-variant-numeric:tabular-nums}
+.mm .tag{font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:999px;border:1px solid #ddd8cc;background:#faf8f3;color:#5f5a4f;white-space:nowrap}
+.mm .tag.code{color:#8a6d1a;border-color:#e8d9a8;background:#fbf5e0}
+.mm .tag.config{color:#2a5db0;border-color:#bcd0f2;background:#eef3fc}
+.mm .tag.weights{color:#1f7a52;border-color:#b6dcc9;background:#eaf6f0}
+.mm .tag.est{border-style:dashed;color:#8a8578;background:#fff}
+.mm .ok{color:#1f7a52;font-weight:650}.mm .bad{color:#b42318;font-weight:650}
+.mm table{width:100%;border-collapse:collapse}.mm td{padding:6px 12px;border-top:1px solid #f3efe6;vertical-align:baseline}
+.mm td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap}
+.mm td.t{text-align:right;width:1%;white-space:nowrap}
+.mm .ph{padding:10px 12px;border-bottom:1px solid #eee9dd;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}.mm .ph b{font-size:14.5px}
+.mm .sec{padding:8px 12px 4px;color:#8a8578;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-top:1px solid #eee9dd}
+.mm .ask{margin:10px 12px 12px;padding:8px 10px;border:1px solid #ddd8cc;border-radius:8px;color:#5f5a4f;background:#faf8f3}
+.mm .desc{padding:10px 12px;color:#3d3a33}.mm .desc div+div{margin-top:4px}
+.mm .flow{display:flex;flex-wrap:wrap;align-items:center;gap:14px 4px;padding:16px 12px}
+.mm .nd{border:1px solid #ddd8cc;border-radius:7px;padding:5px 9px;font-weight:600;background:#fff}
+.mm .nd.io{background:#faf8f3;color:#5f5a4f;font-weight:500}
+.mm .nd.add{border-radius:50%;width:26px;height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.mm .ar{display:inline-flex;flex-direction:column;align-items:center;color:#8a8578;font-size:10.5px;line-height:1.15;padding:0 2px}
+</style>
+<body>
+
+<header>
+  <h1>Building the modelmap MVP</h1>
+  <doc-changes new="25" changed="11"></doc-changes>
+  <details class="thread"><summary>Why · 3 quotes</summary>
+    <doc-quote via="prompt" from="the user">코드베이스를 보고 어떻게 구현할지 검토</doc-quote>
+    <doc-quote via="doc" from="decisions.md">별도 플러그인 저장소를 만들고 floorplan 의 범용 부분만 가져오며 ML 스캐너·스키마·빌드·설명 단계는 새로 쓴다. 포크하지 않는다.</doc-quote>
+    <doc-quote via="doc" from="decisions.md">블록 흐름도(shape 라벨). MVP 의 마지막 순서: 시간이 되면 넣고 아니면 빼고 먼저 낸다.</doc-quote>
+  </details>
+</header>
+
+<main>
+<doc-plan>
+
+<!-- ═════ 1 · the tree ═════ -->
+<doc-claim>
+  <p>The user can open a map of a model's module tree.</p>
+  <doc-mock frame="none" w="480" caption="Each card shows its class, its arguments and its size.">
+<template>
+<div class="mm">
+  <div class="crumb">AnchoredBranchedUPT › geometry_blocks › <b>0</b></div>
+  <div class="grid">
+    <div class="card n"><div class="h"><b>norm1</b><span class="mono cls">LayerNorm</span></div><div class="args">192 · eps=1e-6</div><div class="foot"><span>384</span><span class="tag code">code</span></div></div>
+    <div class="card a" data-ref="attn"><div class="h"><b>attn</b><span class="mono cls">DotProductAttention</span></div><div class="args">dim=192 · num_heads=3</div><div class="foot"><span>148,224</span><span class="tag code">code</span></div></div>
+    <div class="card n"><div class="h"><b>norm2</b><span class="mono cls">LayerNorm</span></div><div class="args">192 · eps=1e-6</div><div class="foot"><span>384</span><span class="tag code">code</span></div></div>
+    <div class="card m"><div class="h"><b>mlp</b><span class="mono cls">Mlp</span></div><div class="args">dim=192</div><div class="foot" data-ref="size"><span>295,872</span><span class="tag code">code</span></div></div>
+  </div>
+</div>
+</template>
+    <doc-pin ref="attn" anchor="tr" title="Class and arguments">Both come from the code.</doc-pin>
+    <doc-pin ref="size" anchor="br" title="Size and source">A tag shows where the number comes from.</doc-pin>
+  </doc-mock>
+
+  <doc-claim>
+    <p>The scanner reads Python code and never runs it.</p>
+    <doc-calls title="Scan" caption="Tap the pyscan.py row to open its sketch.">
+<script type="text/plain">
++ /modelmap                                          @ skills/modelmap/SKILL.md:1
++   **scan.mjs** main()                              @ skills/modelmap/scripts/scan.mjs:1
++     listPythonFiles(root)                          @ skills/modelmap/scripts/lib/common.mjs:1   -- from git ls-files
++     spawn python3 -I **pyscan.py**                 @ skills/modelmap/scripts/pyscan.py:1   -- reads text only
++       **unroll_init**(cls, args)                   @ skills/modelmap/scripts/pyscan.py:1   -- loops, defaults, calls
++     **layerParams**(cls, args)                     @ skills/modelmap/scripts/lib/layers.mjs:1   -- Linear, LayerNorm and more
++     write .cache/scan.json
+</script>
+    </doc-calls>
+    <doc-note tone="risk"><strong>Risk</strong> Only one repo was tested: AB-UPT. Test 3 to 5 more repos before the viewer work.</doc-note>
+    <doc-ask id="scanner">
+      <p>Which tool reads the Python code?</p>
+      <label><input type="radio" name="scanner" value="python" checked> Python <code>ast</code> through <code>python3</code> <small>Needs python3. It reads the code as text and never imports it.</small></label>
+      <label><input type="radio" name="scanner" value="node"> A parser written in Node <small>No python3 needed. You must write or vendor a parser.</small></label>
+    </doc-ask>
+    <div data-if="scanner=node"><doc-note tone="warn"><strong>Then</strong> pyscan.py leaves the plan. Claim 1.1.1 moves to scan.mjs.</doc-note></div>
+    <doc-claim at="skills/modelmap/scripts/pyscan.py:1">
+      <p><b>pyscan.py:1</b> · unroll_init()</p>
+      <doc-code title="pyscan.py · sketch" lang="py" hl="5,10">
+<script type="text/plain">
+def unroll_init(cls, args):
+    env = {**cls.defaults, **args}               # dim=192, blocks="pscscs" ...
+    for stmt in cls.init_body:
+        if isinstance(stmt, ast.For):
+            for item in iterate(stmt.iter, env):     # "pscscs" gives p, s, c, s, c, s
+                run(stmt.body, {**env, stmt.target.id: item})
+        elif is_attr_assign(stmt):               # self.x = Ctor(...)
+            record(stmt.target.attr, ctor_call(stmt.value, env))
+        # an if on a known value picks one branch
+        # an unknown call is never run. Its value becomes "?" with a reason
+</script>
+        <doc-pin line="5" title="Loops unroll on known values">AB-UPT uses this at src/model.py:69.</doc-pin>
+        <doc-pin line="10" tone="warn" title="Unknown stays unknown">The scan never guesses a value.</doc-pin>
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+
+  <doc-claim>
+    <p>Each module instance becomes one node in the viewer's graph.</p>
+    <doc-schema lang="js" diff title="GraphNode · what changes" caption="Green is proposed. A new kind needs colours (viewer.html:58, 86) and an icon (viewer.html:742).">
+<script type="text/plain">
+ {
+   id: string,              // upstream: a subsystem id. Here: the instance path, 'geometry_blocks.0.mlp'
+   parent: string | null,   // the parent instance path
+   label: string,           // the attribute name, 'mlp'
+-  kind: 'ui' | 'service' | 'worker' | 'library' | 'feature' | 'data' | 'external',   // and 4 more
++  kind: 'model' | 'block' | 'attention' | 'mlp' | 'norm' | 'embed' | 'linear' | 'other',
+   summary: string,         // the description from Claude
+-  paths: string[], packages: string[], hosts: string[],
++  m: ModuleRec,            // class, arguments, size, source tags. See Shared.
++  stats: { files: 0, loc: 0 },   // kept at zero. The viewer still reads it.
+ }
+</script>
+    </doc-schema>
+    <doc-note tone="warn"><strong>Gap</strong> viewer.html:30 and :591 need a logo and an icon. The floorplan images are not copied. build.mjs must make new ones.</doc-note>
+    <doc-ask id="names">
+      <p>Keep the in-page names, like window.Floorplan?</p>
+      <label><input type="radio" name="names" value="keep" checked> Keep them <small>Fewer edits. Two more UI files stay the same as upstream.</small></label>
+      <label><input type="radio" name="names" value="rename"> Rename all to modelmap <small>Every UI file changes. Upstream diffs get larger.</small></label>
+    </doc-ask>
+    <div data-if="names=rename"><doc-note tone="warn"><strong>Then</strong> 05-theme.js and 40-tour.js change too. That is 2 more files.</doc-note></div>
+    <doc-claim>
+      <p><b>viewer.html:1006</b> · cardFoot()</p>
+      <doc-code src="skills/modelmap/assets/viewer.html" lines="1006-1016" hl="1009">
+        <doc-pin line="1009" title="Size and ×N go here">It must show parameters and ×N.</doc-pin>
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+
+  <doc-claim>
+    <p>Sibling modules fold into one ×N card only when equal.</p>
+    <doc-code title="fold.mjs · sketch" lang="js" hl="5,8">
+<script type="text/plain">
+// Same class AND same arguments. One difference keeps the cards apart.
+const same = (a, b) => a.cls === b.cls && eq(a.args, b.args)
+
+export function fold(kids) {
+  if (kids.length > 1 && kids.every((k) => same(k, kids[0]))) {
+    return [{ ...kids[0], fold: { n: kids.length, members: kids.map((k) => k.path) } }]
+  }
+  return kids.map((k) => ({ ...k, letter: letterFor(k, kids) }))   // A, B, C by first sight
+}
+</script>
+      <doc-pin line="5" title="All equal gives one card">surface_blocks in AB-UPT folds to ×6.</doc-pin>
+      <doc-pin line="8" title="Not equal keeps every card">blocks in AB-UPT shows A B C B C B.</doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 2 · numbers ═════ -->
+<doc-claim>
+  <p>Every number shows where it comes from.</p>
+  <doc-mock frame="none" w="440" caption="Each number has a tag that names its source.">
+<template>
+<div class="mm">
+  <div class="ph"><b>surface_bias</b><span class="mono cls">Sequential</span><span class="mono dim">src/model.py:56</span></div>
+  <table>
+    <tr><td>Parameters</td><td class="r" data-ref="params">74,112</td><td class="t"><span class="tag code">code</span></td></tr>
+    <tr><td>Size in fp32</td><td class="r">296,448 B</td><td class="t"><span class="tag code">code</span></td></tr>
+    <tr><td>Weights file</td><td class="r ok" data-ref="check">✓ 4 of 4 tensors</td><td class="t"><span class="tag weights">weights</span></td></tr>
+  </table>
+  <div class="sec">Inside</div>
+  <table>
+    <tr><td class="mono">0 &nbsp;Linear(192, 192)</td><td class="r">37,056</td></tr>
+    <tr><td class="mono">1 &nbsp;GELU</td><td class="r">0</td></tr>
+    <tr><td class="mono">2 &nbsp;Linear(192, 192)</td><td class="r">37,056</td></tr>
+  </table>
+</div>
+</template>
+    <doc-pin ref="params" anchor="tr" title="Source tag">code, config, weights or run.</doc-pin>
+    <doc-pin ref="check" anchor="br" title="Weights check">The file header gives the shapes. A mismatch shows ✗.</doc-pin>
+  </doc-mock>
+
+  <doc-claim>
+    <p>The details panel shows each number with its tag.</p>
+    <doc-calls title="Panel" caption="The hook exists upstream, so the viewer core stays the same.">
+<script type="text/plain">
+~ renderPanel()                                      @ skills/modelmap/assets/viewer.html:1634
+~   addPanelSection(where, fn)                       @ skills/modelmap/assets/viewer.html:2496   -- the hook upstream has
++     **70-model.js** section('item')                @ skills/modelmap/assets/ui/70-model.js:1   -- size, bytes, tag, weights check
+</script>
+    </doc-calls>
+  </doc-claim>
+
+  <doc-claim>
+    <p>A sum that holds an unknown part shows ≥.</p>
+    <doc-code title="params.mjs · sketch" lang="js" hl="6">
+<script type="text/plain">
+export function sum(parts) {
+  const known = parts.filter((p) => p.v !== null)
+  const total = known.reduce((s, p) => s + p.v, 0)
+  const unknown = parts.length - known.length
+  if (unknown === 0) return { v: total, src: weakest(known) }    // exact
+  return { v: total, lowerBound: true, why: unknown + ' part unknown' }
+}
+</script>
+      <doc-pin line="6" title="A ? part gives a lower bound">The map shows ≥ and the reason.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>A weight that two modules share counts once.</p>
+    <doc-code title="params.mjs · sketch" lang="js" hl="5">
+<script type="text/plain">
+const seen = new Set()
+export function countOnce(mod) {
+  let n = 0
+  for (const p of ownParams(mod)) {        // weight, bias
+    if (seen.has(p.id)) continue           // a tie gives two paths the same id
+    seen.add(p.id)
+    n += p.numel
+  }
+  return n
+}
+</script>
+      <doc-pin line="5" title="Ties come from the code">pyscan.py records lines such as self.head.weight = self.embed.weight.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>A weights file gives exact counts and a ✓ or ✗.</p>
+    <doc-calls title="Weights check" caption="The scan reads only the header of the file.">
+<script type="text/plain">
++ **scan.mjs** --weights <path>                       @ skills/modelmap/scripts/scan.mjs:1
++   **readHeader**(file)                               @ skills/modelmap/scripts/lib/safetensors.mjs:1   -- 8 bytes give the header size
++   **crossCheck**(modules, header)                    @ skills/modelmap/scripts/lib/safetensors.mjs:30   -- key is path + .weight
++     compare dtype and shape for each key             -- a mismatch shows ✗ with both values
+</script>
+    </doc-calls>
+    <doc-claim at="skills/modelmap/scripts/lib/safetensors.mjs:1">
+      <p><b>safetensors.mjs:1</b> · readHeader()</p>
+      <doc-code title="safetensors.mjs · sketch" lang="js" hl="5,6">
+<script type="text/plain">
+export function readHeader(path) {
+  const fd = fs.openSync(path, 'r')
+  const len = Buffer.alloc(8)
+  fs.readSync(fd, len, 0, 8, 0)
+  const n = Number(len.readBigUInt64LE(0))               // header size in bytes
+  if (n > 100 * 1024 * 1024) throw new Error('header too large')   // a hostile file
+  const buf = Buffer.alloc(n)
+  fs.readSync(fd, buf, 0, n, 8)
+  fs.closeSync(fd)
+  const { __metadata__, ...tensors } = JSON.parse(buf.toString('utf8'))
+  return tensors                  // name: { dtype, shape, data_offsets }
+}
+</script>
+        <doc-pin line="5" title="The file gives its own size">No tensor data is read.</doc-pin>
+        <doc-pin line="6" tone="warn" title="A size cap">It stops a hostile file.</doc-pin>
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+
+  <doc-claim>
+    <p>A config file fills the values that the code reads from it.</p>
+    <doc-code title="resolve.mjs · sketch" lang="js" hl="4,9">
+<script type="text/plain">
+// One expression. Each leaf carries its source.
+export function evalExpr(node, env) {
+  if (node.type === 'literal') return { v: node.value, src: 'code', at: node.at }
+  if (node.type === 'config') {                         // config.hidden_size
+    const hit = env.config && env.config[node.key]
+    if (hit === undefined) return unknown(node.key + ' is not in the config')
+    return { v: hit, src: 'config', at: env.configFile }
+  }
+  if (node.type === 'binop') return combine(node.op, evalExpr(node.l, env), evalExpr(node.r, env))
+  return unknown('cannot evaluate ' + node.type)
+}
+</script>
+      <doc-pin line="4" title="Config is read by name">From a JSON file or a small YAML file.</doc-pin>
+      <doc-pin line="9" title="Sources mix">The tag of a result is the weakest tag of its parts.</doc-pin>
+    </doc-code>
+    <doc-ask id="config">
+      <p>Which config formats does the scan read?</p>
+      <label><input type="radio" name="config" value="json"> JSON only <small>YAML values show ? with a reason. No new parser.</small></label>
+      <label><input type="radio" name="config" value="yaml" checked> JSON and a small YAML reader <small>Adds a YAML reader to write. Name matches can be wrong.</small></label>
+    </doc-ask>
+    <doc-note tone="info"><strong>Answered</strong> The reader takes maps, lists and plain values. It stops at anchors and tags, and the value shows ?. It adds yaml.mjs and its test.</doc-note>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 3 · contract ═════ -->
+<doc-claim>
+  <p>The user can see the inputs and outputs of the model.</p>
+  <doc-mock frame="none" w="540" caption="Names come from the signature, and a missing shape shows ?.">
+<template>
+<div class="mm">
+  <div class="ph"><b>AnchoredBranchedUPT</b><span class="mono dim">src/model.py:118 · forward()</span></div>
+  <div class="sec" style="border-top:0">Inputs</div>
+  <table>
+    <tr><td class="mono">geometry_position</td><td class="mono dim">Tensor</td><td class="r mono"><span class="tag est">estimate</span> [N_g, 3]</td></tr>
+    <tr><td class="mono">geometry_supernode_idx</td><td class="mono dim">Tensor</td><td class="r mono"><span class="tag est">estimate</span> [N_s]</td></tr>
+    <tr><td class="mono">geometry_batch_idx</td><td class="mono dim">Tensor | None</td><td class="r mono" data-ref="unk">?</td></tr>
+    <tr><td class="mono">surface_anchor_position</td><td class="mono dim">Tensor</td><td class="r mono"><span class="tag est">estimate</span> [B, N, 3]</td></tr>
+    <tr><td class="mono">volume_anchor_position</td><td class="mono dim">Tensor</td><td class="r mono"><span class="tag est">estimate</span> [B, N, 3]</td></tr>
+    <tr><td class="mono">surface_query_position</td><td class="mono dim">Tensor | None = None</td><td class="r mono"><span class="tag est">estimate</span> [B, N, 3]</td></tr>
+    <tr><td class="mono">volume_query_position</td><td class="mono dim">Tensor | None = None</td><td class="r mono"><span class="tag est">estimate</span> [B, N, 3]</td></tr>
+  </table>
+  <div class="sec">Output</div>
+  <table><tr><td class="mono">dict[str, Tensor]</td><td class="r dim">10 keys</td></tr></table>
+  <div class="sec" data-ref="dims">Dimensions</div>
+  <table><tr><td class="mono" style="line-height:1.8">D = 192 &nbsp;<span class="dim">dim</span><br>H = 3 &nbsp;<span class="dim">num_heads</span><br>d_h = 64 &nbsp;<span class="dim">dim // num_heads</span></td><td class="t"><span class="tag code">code</span></td></tr></table>
+</div>
+</template>
+    <doc-pin ref="unk" anchor="l" title="Unknown stays ?">No annotation and no clear use in the code.</doc-pin>
+    <doc-pin ref="dims" anchor="r" title="Short names for sizes">The same names label the shapes.</doc-pin>
+  </doc-mock>
+
+  <doc-claim>
+    <p>The signature of forward() gives the input names and types.</p>
+    <doc-code src="src/model.py" lines="118-130" hl="121,128,130">
+      <doc-pin line="121" title="Name and type">Exact. Read from the annotation.</doc-pin>
+      <doc-pin line="128" title="A None default">The input is optional.</doc-pin>
+      <doc-pin line="130" title="A dict result">The keys come from the outputs[...] lines in the body.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>A dimension table maps D, H and d_h to values.</p>
+    <doc-code src="src/model.py" lines="27-40" hl="27,29,40">
+      <doc-pin line="27" title="D is dim, 192"></doc-pin>
+      <doc-pin line="29" title="H is num_heads, 3"></doc-pin>
+      <doc-pin line="40" title="d_h is dim // num_heads, 64"></doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 4 · read and ask ═════ -->
+<doc-claim>
+  <p>The user can read what each module does and ask about it.</p>
+  <doc-mock frame="none" w="460" caption="The text is Korean, with the English term next to it.">
+<template>
+<div class="mm">
+  <div class="ph"><b>TransformerBlock</b><span class="mono dim">src/modules/blocks/transformer_block.py:10</span></div>
+  <div class="desc" data-ref="desc">
+    <div><b>사전 정규화(pre-norm) 트랜스포머 블록</b></div>
+    <div>LayerNorm → attention → 잔차 더하기(residual add). 다시 LayerNorm → Mlp → 잔차 더하기. 입력과 출력 shape 는 <span class="mono">[B, N, D]</span> 로 같다.</div>
+  </div>
+  <div class="ask" data-ref="ask">Ask › surface_blocks 의 파라미터는 모두 몇 개야?</div>
+</div>
+</template>
+    <doc-pin ref="desc" anchor="tr" title="Written from forward()">The text says what the code does today.</doc-pin>
+    <doc-pin ref="ask" anchor="br" title="Ask bar">The number comes from a tool. See 4.2.</doc-pin>
+  </doc-mock>
+
+  <doc-claim>
+    <p>Claude writes each description from the forward() code.</p>
+    <doc-calls title="Descriptions" caption="One worksheet for each class. Claude fills it in.">
+<script type="text/plain">
++ /modelmap                                           @ skills/modelmap/SKILL.md:1
++   **describe.mjs**                                  @ skills/modelmap/scripts/describe.mjs:1   -- one worksheet for each class
++     worksheet: class, arguments, forward() text     -- read from .cache/scan.json
++   Claude writes descriptions/*.json                 -- Korean text, English term in brackets
++   **build.mjs**                                     @ skills/modelmap/scripts/build.mjs:1   -- merges the text into graph.json
+</script>
+    </doc-calls>
+  </doc-claim>
+
+  <doc-claim>
+    <p>Ask gets every number from a lookup tool.</p>
+    <doc-calls title="Ask" caption="The agent can run one command. It cannot do the sums itself.">
+<script type="text/plain">
+~ submitAsk()                                         @ skills/modelmap/assets/viewer.html:2271
+~   POST /api/ask                                     @ skills/modelmap/assets/serve.mjs:574
+~     claudeRun(body, mode)                           @ skills/modelmap/assets/serve.mjs:290   -- claude -p with read-only tools
+~       node modelmap/query.mjs params <id>           @ skills/modelmap/assets/serve.mjs:300   -- the one command Bash can run
++         **params**(id)                              @ skills/modelmap/assets/graph-query.js:176   -- sum, bytes and tags
++           add the command to the CLI                @ skills/modelmap/assets/query-cli.mjs:24
+</script>
+    </doc-calls>
+    <doc-claim at="skills/modelmap/assets/serve.mjs:300">
+      <p><b>serve.mjs:300</b> · claudeRun()</p>
+      <doc-code src="skills/modelmap/assets/serve.mjs" lines="293-300" hl="295,300">
+        <doc-pin line="295" title="Four paths to rename">floorplan/ becomes modelmap/.</doc-pin>
+        <doc-pin line="300" tone="warn" title="One Bash command">Add params here. Bash can run nothing else.</doc-pin>
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 5 · flow (last) ═════ -->
+<doc-claim>
+  <p>The user can see how data moves through a block.</p>
+  <doc-mock frame="none" w="480" caption="Every shape on an arrow is an estimate.">
+<template>
+<div class="mm">
+  <div class="ph"><b>TransformerBlock</b><span class="mono dim">transformer_block.py:35-36</span></div>
+  <div class="flow">
+    <span class="nd io">x</span><span class="ar"><span class="tag est" data-ref="shape">[B, N, D]</span>→</span><span class="nd">norm1</span><span class="ar"><span class="tag est">[B, N, D]</span>→</span><span class="nd">attn</span><span class="ar"><span class="tag est">[B, N, D]</span>→</span><span class="nd add">+</span>
+  </div>
+  <div class="flow" style="padding-top:0">
+    <span class="dim mono" style="margin-right:6px">from +</span><span class="nd">norm2</span><span class="ar"><span class="tag est">[B, N, D]</span>→</span><span class="nd">mlp</span><span class="ar"><span class="tag est">[B, N, D]</span>→</span><span class="nd add">+</span><span class="ar"><span class="tag est">[B, N, D]</span>→</span><span class="nd io">out</span>
+  </div>
+</div>
+</template>
+    <doc-pin ref="shape" anchor="t" offset="0,-4" title="Estimate tag">Claude reads the code. Nothing runs.</doc-pin>
+  </doc-mock>
+  <doc-ask id="flow">
+    <p>Build the flow diagram in this MVP?</p>
+    <label><input type="radio" name="flow" value="last" checked> Yes, build it last <small>Cut it if the other claims run late.</small></label>
+    <label><input type="radio" name="flow" value="cut"> No, cut it now <small>Claim 5 goes. Real shapes come with the v1 runtime trace.</small></label>
+  </doc-ask>
+  <div data-if="flow=cut"><doc-note tone="warn"><strong>Then</strong> claim 5 goes. flow.mjs leaves the file list, and the new file count is 22.</doc-note></div>
+
+  <doc-claim>
+    <p>Claude writes the edges from the forward() code.</p>
+    <doc-schema lang="js" title="FlowEdge · sketch" caption="One tensor that moves from one call to the next.">
+<script type="text/plain">
+{
+  from: 'norm1',            // an instance path, or 'in' or 'out'
+  to: 'attn',
+  shape: '[B, N, D]',       // names from the dimension table
+  tag: 'estimate',          // always 'estimate' in the MVP
+  at: 'src/modules/blocks/transformer_block.py:35',    // the line that moves it
+}
+</script>
+    </doc-schema>
+  </doc-claim>
+
+  <doc-claim>
+    <p>The viewer draws the shape next to each edge.</p>
+    <doc-code src="skills/modelmap/assets/viewer.html" lines="1169-1178" hl="1174,1176">
+      <doc-pin line="1174" title="A new link kind">tensor needs a colour and a place in the filter list.</doc-pin>
+      <doc-pin line="1176" title="Add the label here">The text is link.shape. The viewer has no edge label now.</doc-pin>
+    </doc-code>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ shared · scope ═════ -->
+<doc-claim aux="shared">
+  <p>Shared: every value carries its source in one record.</p>
+  <doc-schema lang="js" title="ModuleRec · sketch" caption="Claims 1, 2, 3 and 5 all read this record.">
+<script type="text/plain">
+// A value that the scan knows.
+{ v: 192, src: 'code', at: 'src/model.py:27' }      // src: 'code' | 'config' | 'weights' | 'run' (run is v1)
+
+// A value that the scan cannot know. The map shows "?" and the reason.
+{ v: null, why: 'radius comes from a YAML config' }
+
+// One module instance.
+{
+  path: 'geometry_blocks.0.mlp',
+  cls: 'Mlp',
+  args: { dim: { v: 192, src: 'code', at: 'src/model.py:27' } },
+  def: { file: 'src/modules/mlp.py', line: 5 },
+  params: { v: 295872, src: 'code' },              // plus lowerBound: true when a part is unknown (shows ≥)
+  fold: { n: 6, members: ['…'] },                  // only when sibling modules are equal
+  check: { ok: true, file: 'model.safetensors' },  // only when a weights file is given
+}
+</script>
+  </doc-schema>
+</doc-claim>
+
+<doc-claim aux="scope">
+  <p>Not changing:</p>
+  <ul>
+    <li>The 11 copied files stay the same as upstream. A hash test checks them.</li>
+    <li>The installed floorplan plugin stays as it is.</li>
+    <li>The code of the target repo is never imported or run. <code>torch.load</code> is never called.</li>
+    <li>No code or weight file goes to an outside service.</li>
+    <li>Runtime trace, FLOPs and structure diff stay in v1. <code>ui/25-recent.js</code> stays out of the build.</li>
+  </ul>
+</doc-claim>
+
+</doc-plan>
+</main>
+</body>
+</html>
