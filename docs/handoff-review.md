@@ -17,8 +17,11 @@
 | R9 일부 | 4300 자리를 넘는 정수가 `json.dumps` 를 죽이던 것(3.11 이상) | a74fc65 | R5 의 `MAX_BITS = 1024` 로 그런 정수가 아예 안 만들어진다. 3.11 이상에서는 다시 돌려 보지 않았다 |
 | R24 | `status.mjs` 가 `graph.json` 의 `head`·`path` 를 검사 없이 git 인자·`-C` 로 넘김 | 8df5ec3 | 아래 §1.2 |
 | R7 | `open.mjs` 와 `serve.mjs --stop` 이 저장소가 커밋한 `.cache/server.json` 을 믿음 | 8df5ec3 | 아래 §1.2. 소유자 검사는 uid 를 바꾼 단위 시험뿐 |
-| R18 일부 | `--stop` 이 죽이기 전에 서버의 `/api/status` 로 pid·root 를 확인함 | 8df5ec3 | 같은 시험. 둘째 서버가 `server.json` 을 덮어쓰는 것은 그대로(§2.1) |
+| R18 | 같은 지도에 `serve.mjs` 가 둘 뜨면 `server.json` 을 덮어씀. 앞 절반: `--stop` 이 죽이기 전에 서버의 `/api/status` 로 pid·root 를 확인함. 나머지: 시작할 때 `wx` 로만 쓰고, 이 지도의 살아 있는 서버가 있으면 둘째는 한 줄을 내고 종료 코드 1 | 8df5ec3(앞 절반), 2851f84 | 아래 §1.4. 가짜 CLI 와 흉내 서버로만 |
 | R28 | `open.mjs` 가 저장소가 커밋한 `modelmap/serve.mjs` 를 그대로 실행함. 같은 종류: 서버가 `import` 하는 `page-safety.mjs`, `new Function` 으로 읽는 `query.mjs`(Ask 가 허용하는 `node modelmap/query.mjs` 와 같은 파일), 내보내는 `index.html` | 028ef50 | 아래 §1.3. 가짜 CLI 만 썼다(워커가 손으로 한 재현 한 번에서 시작 확인이 실제 `claude --version` 만 한 번 돌렸다: 질문·모델 호출은 없었다) |
+| R30 | 서버의 정적 경로가 `modelmap/` 의 `.html`·`.svg`·`.js` 를 그 종류 그대로 같은 출처에서 내보냄(저장소가 `x.html` 을 커밋하면 그 페이지가 `GET /` 로 Ask 토큰을 읽음) → 정적 응답마다 `Content-Security-Policy: sandbox`·`nosniff` | 2851f84 | 아래 §1.4. 실제 headless Chrome 으로도 봤다(수정 전에는 토큰이 읽혔다) |
+| R16 | Ask 자식(CLI 와 그것이 띄우는 프로세스)이 서버의 환경 변수를 전부 물려받음 → 허용 목록(`cliEnv`)과 `MODELMAP_PASS_ENV` | 2851f84 | 아래 §1.4. 가짜 CLI 의 기록으로만. 실제 CLI 로는 안 해 봄(§2.1 "R16 실제 CLI 확인") |
+| R19 | 동시 `/api/ask` 제한 없음, `/api/cancel` 이 모든 질문을 죽임 → 동시 2개(셋째는 `busy`), 취소는 `start` 이벤트의 id 로 그 질문만 | 2851f84 | 아래 §1.4. 가짜 CLI(`#wait`)로 |
 
 ### 1.1 이번 라운드(R4·R5·R6·R8) 결과
 
@@ -48,6 +51,17 @@
 - 실행 중인 서버에서 `query.mjs` 를 바꾸고 `index.html` 을 건드리면 로드하지 않고(표식 없음, 옛 지도, 로그 한 줄), 그때의 Ask 는 CLI 를 띄우지 않고 실패 이벤트로 끝난다(Claude·Codex 길 모두). 같은 플러그인의 재빌드는 그대로 reload 된다. `build.mjs` 의 출력은 `1f1a6bf` 와 같은 scan 에서 바이트 동일하다.
 - 하지 못한 것: 실제 CLI(금지), Windows, Node 18 실행. 서버의 정적 파일 경로가 `modelmap/` 의 `.html`·`.svg`·`.js` 를 그 종류대로 내보내는 것은 감사에서 찾았으나 고치지 않았다(아래 §2.0).
 
+### 1.4 이번 라운드(R30·R16·R18·R19) 결과
+
+워커가 만들고 조정자가 확인했다: 전체 시험 세 번(268/268)과 함정 실행, 워커의 재현 스크립트를 HEAD 의 `serve.mjs` 와 새 트리에 각각 돌려 네 가지 모두(정적 파일의 토큰 읽기는 실제 headless Chrome 으로) 수정 전에는 되고 지금은 막힘을 봤고, 워커가 보고한 수정 열세 개 중 아홉 개(sandbox, nosniff, 허용 목록 전체 복사, `NODE_OPTIONS` 허용, `--version` 의 환경, `wx`, `MAX_ASKS`, id 없는 취소, 페이지의 id) 를 되돌린 복사본에서 새 시험이 빨개지는 것을 봤다. 시험 26개가 늘어 268개다(`env.test.mjs` 9, `one-server.test.mjs` 9, `concurrent-asks.test.mjs` 6, `serve.test.mjs` 2). `node --test tests/*.test.mjs` 를 세 번 돌려 모두 268/268(24초쯤; 전에는 20초), 함정용 `claude`·`codex` 를 PATH 맨 앞에 둔 실행에서도 한 번도 안 불렸다(268/268, 24초). 새 시험 둘이 부하 속에서 틀려(도우미 `startServe` 가 시작 뒤의 줄마다 `server.json` 을 다시 읽던 것, 시험이 서버 로그를 너무 일찍 읽던 것) 고쳤고, 고친 뒤 부하 속에서 8번 모두 통과했다. 기존 시험 2개는 뜻이 바뀌어 고쳤다(id 없는 cancel 이 모든 실행을 죽이던 시험, 같은 지도에 서버 둘을 띄우던 "각 실행은 새 토큰" 시험). `supply-chain.test.mjs` 는 바꾸지 않았다.
+
+- R30: `modelmap/x.html`(`fetch('/')` 로 토큰을 읽어 화면에 쓰는 스크립트)을 헤드리스 Chrome 으로 열면 수정 전에는 `SCRIPT RAN, TOKEN=<hex>`, 수정 뒤에는 스크립트가 안 돈다. x.html·x.svg·x.js·x.mjs·x.css·모르는 확장자·확장자 없음은 상태·종류·본문이 그대로이고 `content-security-policy: sandbox`·`x-content-type-options: nosniff`·`no-store` 가 붙는다. `/`·`/index.html` 에는 sandbox 헤더가 없고 meta CSP 가 그대로다. 페이지는 정적 경로에서 아무것도 불러오지 않는다.
+- R16: GITHUB_TOKEN·NODE_OPTIONS 를 가진 서버가 띄운 가짜 CLI 의 환경은 수정 전 82~90개 변수(서버 환경 전부), 수정 뒤 19개이고 토큰·`NODE_OPTIONS`·AWS 키가 없다. `NODE_OPTIONS` 의 `--require` 훅은 수정 전에 서버·CLI·CLI 가 띄운 node 세 곳에서 돌았고 지금은 서버 한 곳이다. `--version` 확인도 같은 환경이다. `MODELMAP_PASS_ENV` 는 이름과 접두사를 통과시키고 `NODE_OPTIONS` 는 못 통과시킨다. Bedrock 스위치가 있을 때만 `AWS_*`.
+- R18: 같은 지도에 둘째 서버를 띄우면 수정 전에는 `server.json` 이 둘째의 pid 로 바뀌고 `--stop` 이 둘째만 멈췄다(첫 서버는 남음). 지금은 둘째가 `✗ A map server for this folder is already running at <url> (pid N). …` 를 내고 종료 코드 1, 첫 서버의 기록은 바이트·시각이 그대로이고 `--stop` 이 첫 서버를 멈춘다. 동시에 뜬 둘(5번)은 3초 뒤 하나만 살아 있다. 낡은 기록 8가지와 R7 의 틀린 형태 29가지·링크·폴더, `open.mjs` 와 손으로 띄운 서버의 경주, 종료 신호에 안 죽는 옛 서버(새 서버가 안 죽이고 그 서버를 보여 줌)도 시험한다.
+- R19: 질문 셋을 동시에 보내면 수정 전에는 CLI 셋이 뜨고, id 없는 `/api/cancel` 한 번이 셋 모두를 죽였다. 지금은 셋째가 `busy` 로 바로 끝나고(CLI 는 둘), id 없는·틀린 id 의 취소는 아무것도 안 죽이고, 첫째의 id 로 취소하면 첫째만 죽고 둘째는 답한다.
+- 수정을 하나씩 되돌린 복사본에서 새 시험이 빨개지는 것을 확인했다(sandbox, nosniff, 허용 목록 전체 복사, 금지 목록, Bedrock 규칙, `MODELMAP_PASS_ENV` 의 우선순위, `--version` 의 환경, `wx`, 살아 있는 서버 확인, 낡은 기록 교체, `MAX_ASKS`, id 없는 취소, 페이지의 id; 덤으로 open.mjs 의 두 가지와 404 의 헤더). 자세한 것은 `UPSTREAM.md` §19.
+- 하지 못한 것: 실제 CLI(금지)로 허용 목록 확인, Windows, Node 18 실행, Safari·Firefox. 이름에 KEY 등이 든 변수는 `MODELMAP_PASS_ENV` 로도 못 보낸다.
+
 ## 2. 고쳐야 할 것, 먼저 할 순서대로
 
 ### 2.0 R28 (고침, 남은 것만)
@@ -56,7 +70,7 @@
 - 아직 만들거나 연 적 없는 `modelmap/` 에서 손으로 `node modelmap/serve.mjs` 나 `--stop` 을 돌리는 것(그 파일을 믿을 수 있게 만들 방법이 플러그인 안에는 없다).
 - 서버가 도는 동안 저장소 갱신(`git pull`)이 `index.html` 을 강제로 덮어쓰는 것(서버가 다시 읽어 다음 `open.mjs` 가 다시 쓸 때까지 그 페이지를 서빙한다. `query.mjs` 와 Ask 쪽은 닫혔다).
 - `graph.json` 의 내용이 페이지에 그려지는 적대적 데이터인 것(R9 류), `.cache/scan.json` 과 `descriptions/*.json` 을 데이터로 읽는 것(`describe.mjs`), 그 밖의 항목(R9..R20, R22, R23, R25..R27, R29).
-- 감사에서 더 찾음: 서버의 정적 파일 경로는 `modelmap/` 의 `.html`·`.svg`·`.js` 를 그 종류 그대로 같은 출처에서 내보낸다(저장소가 `modelmap/x.html` 을 커밋하고 사용자가 그 주소로 가면 그 페이지가 `GET /` 로 토큰을 읽을 수 있다. `tests/serve.test.mjs` 가 이 정적 서빙을 고정하고 있어 건드리지 않았다). 제안: 정적 응답에 `Content-Security-Policy: sandbox` 와 `X-Content-Type-Options: nosniff` 를 달거나 허용 목록(`graph.json` 등)만 내보낸다.
+- 감사에서 더 찾음: 서버의 정적 파일 경로가 `.html`·`.svg`·`.js` 를 그 종류대로 같은 출처에서 내보내던 것은 고쳤다(R30, `UPSTREAM.md` §19).
 
 ### 2.0b R24 (고침) `status.mjs` 가 `graph.json` 의 값을 검사 없이 git 인자로 넘김
 
@@ -68,9 +82,10 @@
 - **R1 나머지, 저장소의 CLAUDE.md 는 계속 읽힘.** `--setting-sources` 는 settings 만 막는다. 프롬프트 주입 통로가 남는다. `--safe-mode`(CLAUDE.md·훅·스킬 모두 끔)나 `--bare` 를 쓸지, 그때 인증과 도구가 그대로인지 **실제 CLI 로 한 번 확인**해야 한다. 모델 호출이 필요하니 사용자 허락을 받고 할 것.
 - **R1 확인 안 됨:** `--setting-sources user` 가 실제 CLI 에서 프로젝트 훅을 막는지. 확인 방법: 임시 저장소에 `.claude/settings.json` 으로 `SessionStart` 훅(`touch /tmp/marker`)을 두고 `serve.mjs` 가 만드는 인자로 `claude -p` 를 한 번 돌려 마커가 생기는지 본다(허락 필요).
 - **R2 가정:** 실제 CLI 의 `session_id` 가 항상 UUID 라는 것. 아니면 후속 질문이 `bad_session` 으로 거절된다.
-- **R16 (MEDIUM) Ask 자식 프로세스가 서버의 환경 변수를 전부 물려받음** (`serve.mjs` `cliEnv`). `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, 클라우드 키, `NODE_OPTIONS`, `PATH` 가 그대로 간다. 다른 결함과 합쳐져야 악용된다. 제안: 최소 환경(HOME, PATH, LANG, TERM, CLI 의 인증 변수)만 넘기고 `NODE_OPTIONS`·`PYTHON*` 은 뺀다. 가짜 CLI 로 환경을 기록해 테스트할 수 있다.
-- **R19 (LOW) 동시 `/api/ask` 제한 없음, `/api/cancel` 이 모든 질문을 죽임.** 제안: 동시 1~2개로 제한하고 대기열을 두며, 취소는 `start` 이벤트가 돌려주는 id 로 한다.
-- **R18 (LOW) 같은 지도에 `serve.mjs` 가 둘 뜨면 `server.json` 을 덮어씀.** 첫 서버는 `--stop` 으로 못 찾고(수동 시작은 idle 종료 0), 낡은 `server.json`(재사용된 pid)이면 `--stop` 이 남의 프로세스를 죽일 수 있다. 한 번 실제로 겪은 일이다. **절반은 했다(`UPSTREAM.md` §17):** `--stop` 과 open.mjs 의 재시작은 죽이기 전에 `/api/status` 로 pid 와 이 지도의 root 를 확인한다. 남은 것: 시작할 때 살아 있는 같은 지도의 서버가 있으면 거부하거나 `wx` 잠금 파일을 쓰는 것(둘째 서버가 `server.json` 을 덮어쓰면 첫 서버를 `--stop` 이 못 찾는다).
+- **R16 실제 CLI 확인 (열림, 사용자 허락과 실제 호출 1~2회 필요):** 허용 목록(`serve.mjs` 의 `cliEnv`)으로 실제 `claude`(와 `codex`)가 여전히 로그인되고 답하는지 본다: 일반 로그인에서 한 번, 사용자가 쓰면 Bedrock·Vertex(`CLAUDE_CODE_USE_*`)에서 한 번. 안 되면 빠진 변수 이름을 허용 목록에 더하거나 `MODELMAP_PASS_ENV` 로 안내한다. 같이 볼 것: `GIT_*` 가 막혀 있어서 R4 의 Ask 쪽 git 에 `GIT_CONFIG_*` 를 주려면 서버가 직접 넣어야 한다.
+- **R16 (고침)** Ask 자식의 환경 변수는 허용 목록으로 바꿨다(`UPSTREAM.md` §19). 실제 CLI 로 확인하는 일은 바로 위 항목.
+- **R19 (고침)** 동시 Ask 는 2개까지(셋째는 `busy`), 취소는 `start` 이벤트의 id 로 그 질문만(`UPSTREAM.md` §19).
+- **R18 (고침)** 같은 지도에는 서버가 하나다(`wx` 로 쓰고 살아 있는 서버가 있으면 둘째는 종료 코드 1, `UPSTREAM.md` §19).
 
 ### 2.2 R7 (고침) `open.mjs` 가 저장소가 커밋한 `server.json` 을 믿음
 
@@ -133,9 +148,8 @@ NTFS 에서 8.3 이름이 켜져 있으면 `.cache` 에 `CACHE~1` 같은 짧은 
 
 ## 6. 권장 순서
 
-1. **정적 파일 경로의 활성 콘텐츠**(§2.0 의 마지막 항목: 정적 응답에 `Content-Security-Policy: sandbox` 와 `nosniff`, 작은 수정과 시험 하나) **+ R16 + R18 의 나머지 + R19** (서버 쪽, 한 워커): 모두 `serve.mjs`·`open.mjs` 의 작은 변경이고 가짜 CLI 로 시험할 수 있다. R18 은 `--stop` 이 죽이기 전에 `/api/status` 로 확인하는 절반을 했고(`UPSTREAM.md` §17), 서버가 둘 뜨는 것을 막는 절반이 남았다.
-2. **R1 확인 + R3 나머지 + CLAUDE.md + R4 의 Ask 쪽 git** (사용자 결정과 실제 CLI 호출 1~2회가 필요).
-3. **R9 + R10 + R17 + R25 + R26** (스캐너 견고성, pyscan.py·scan.mjs).
-4. **R11 + R12 + R13** (숫자 정확성: 접기, YAML 1.1, 버퍼). "아는 척하지 않기"(`?`·`≥`)가 원칙이다.
-5. **R14 + R22 + R20 + R15 + R23 + R27 + R29 + 작은 항목** (테스트와 문서).
-6. 그다음에 `docs/decisions.md` 의 열린 항목: 라이선스 결정, 연구 저장소 3~5곳에서의 해결률 측정, torch `numel()` 대조, README, 아직 미작성인 `UPSTREAM.md` 행들.
+1. **R1 확인 + R3 나머지 + CLAUDE.md + R4 의 Ask 쪽 git + R16 실제 CLI 확인** (사용자 결정과 실제 CLI 호출 1~2회가 필요).
+2. **R9 + R10 + R17 + R25 + R26** (스캐너 견고성, pyscan.py·scan.mjs).
+3. **R11 + R12 + R13** (숫자 정확성: 접기, YAML 1.1, 버퍼). "아는 척하지 않기"(`?`·`≥`)가 원칙이다.
+4. **R14 + R22 + R20 + R15 + R23 + R27 + R29 + 작은 항목** (테스트와 문서).
+5. 그다음에 `docs/decisions.md` 의 열린 항목: 라이선스 결정, 연구 저장소 3~5곳에서의 해결률 측정, torch `numel()` 대조, README, 아직 미작성인 `UPSTREAM.md` 행들.
