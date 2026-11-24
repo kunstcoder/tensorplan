@@ -9,32 +9,33 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { script, hasPython } from './helpers.mjs';
-import { posixOnly, sleep, alive, run, pool, sendJson, copyMap, mapSource, recordFile, goodRecord, plant, stopServer, openerShim, FAKE_CLAUDE, trial, MODELMAP_LINE, stopsAtOnce, sha12, ANSWERS } from './helpers-trusted.mjs';
+import { posixOnly, sleep, alive, run, pool, sendJson, copyMap, mapSource, recordFile, goodRecord, plant, stopServer, openerShim, FAKE_CLAUDE, trial, MODELMAP_LINE, stopsAtOnce, codeHash12, pluginCopy, ANSWERS } from './helpers-trusted.mjs';
 import { readServerRecord, verifiedStatus } from '../skills/modelmap/scripts/lib/common.mjs';
 
 const skipServer = posixOnly || (!hasPython && 'python3 (3.9+) is needed to scan');
 
 test('open.mjs: the port of a stale record is not passed on to the new server, the port of the server it just stopped (which was checked) is', { skip: skipServer }, async () => {
   mapSource();
-  // serve.mjs of the copy is a stand-in that writes the arguments it got, adds --port 0 when there is none (so no trial uses 4378), and runs the real one
+  // The serve.mjs that open.mjs writes into the copy is a stand-in (assets/serve.mjs of a plugin copy): it writes the arguments it got next to
+  // itself, adds --port 0 when there is none (so no trial uses 4378), and runs the real one, which the copy keeps as serve.real.mjs
+  const plugin = pluginCopy({ 'assets/serve.mjs': "import fs from 'node:fs';\nimport { fileURLToPath } from 'node:url';\nfs.appendFileSync(fileURLToPath(import.meta.url).replace(/serve\\.mjs$/, 'argv.log'), JSON.stringify(process.argv.slice(2)) + '\\n');\nif (!process.argv.includes('--port')) process.argv.push('--port', '0');\nawait import('./serve.real.mjs');\n" });
   const stub = (ctx) => {
     fs.renameSync(path.join(ctx.w.map, 'serve.mjs'), path.join(ctx.w.map, 'serve.real.mjs'));
-    const log = path.join(ctx.w.base, 'argv.log');
-    fs.writeFileSync(path.join(ctx.w.map, 'serve.mjs'), "import fs from 'node:fs';\nfs.appendFileSync(" + JSON.stringify(log) + ", JSON.stringify(process.argv.slice(2)) + '\\n');\nif (!process.argv.includes('--port')) process.argv.push('--port', '0');\nawait import('./serve.real.mjs');\n");
-    ctx.argvLog = log;
     plant(ctx.w.map, goodRecord(ctx.P, ctx.C));
   };
-  const started = (ctx) => fs.readFileSync(ctx.argvLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((a) => a.includes('--no-open'));
-  await trial({ setup: stub, noPort: true }, (ctx) => { // a stand-in that answers 403: stale
-    assert.equal(ctx.r.status, 0, ctx.out);
-    assert.ok(!started(ctx).includes('--port'), 'the port of a stale record was passed on: ' + started(ctx));
-  });
-  await trial({ setup: stub, noPort: true, answer: ANSWERS['the right pid and root, another hash'].a }, async (ctx) => { // the server it stopped
-    assert.equal(ctx.r.status, 0, ctx.out);
-    assert.ok(await ctx.child.gone());
-    const a = started(ctx);
-    assert.equal(a[a.indexOf('--port') + 1], String(ctx.P), 'the port of the stopped server is kept: ' + a);
-  });
+  const started = (ctx) => fs.readFileSync(path.join(ctx.w.map, 'argv.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((a) => a.includes('--no-open'));
+  try {
+    await trial({ setup: stub, noPort: true, plugin }, (ctx) => { // a stand-in that answers 403: stale
+      assert.equal(ctx.r.status, 0, ctx.out);
+      assert.ok(!started(ctx).includes('--port'), 'the port of a stale record was passed on: ' + started(ctx));
+    });
+    await trial({ setup: stub, noPort: true, plugin, answer: ANSWERS['the right pid and root, another hash'].a }, async (ctx) => { // the server it stopped
+      assert.equal(ctx.r.status, 0, ctx.out);
+      assert.ok(await ctx.child.gone());
+      const a = started(ctx);
+      assert.equal(a[a.indexOf('--port') + 1], String(ctx.P), 'the port of the stopped server is kept: ' + a);
+    });
+  } finally { plugin.done(); }
 });
 
 test('open.mjs: the browser (open, xdg-open) is given only the address of a server that passed the checks, never one from a record that did not', { skip: skipServer }, async () => {
@@ -54,7 +55,7 @@ test('open.mjs: the browser (open, xdg-open) is given only the address of a serv
     const shim = openerShim();
     try {
       // a stand-in that answers like the map's own server (right pid, right root, this serve.mjs), so only the record's form stands in the way
-      const answer = (c) => (req, res) => sendJson(res, 200, { pid: make ? make(c).pid : c.C, root: c.w.root, hash: sha12(path.join(c.w.map, 'serve.mjs')), tabs: 0, editor: null, cli: true });
+      const answer = (c) => (req, res) => sendJson(res, 200, { pid: make ? make(c).pid : c.C, root: c.w.root, hash: codeHash12(c.w.map), tabs: 0, editor: null, cli: true });
       await trial({ setup: (ctx) => { if (make) plant(ctx.w.map, make(ctx)); }, answer, args: ['--open'], env: shim.env }, async (ctx) => {
         assert.equal(ctx.r.status, 0, ctx.out);
         const m = MODELMAP_LINE.exec(ctx.r.stdout);
@@ -69,7 +70,10 @@ test('open.mjs: the browser (open, xdg-open) is given only the address of a serv
 
 test('open.mjs: the normal flow with a real server still works: it starts one, shows it, reuses it, says "already open" for a tab, restarts it for a newer serve.mjs, and --stop stops it', { skip: skipServer }, async () => {
   const w = copyMap();
-  const open = () => run(script('open.mjs'), [w.root, '--no-open', '--port', '0', '--claude', FAKE_CLAUDE]);
+  const open = (plugin) => run(plugin ? plugin.script('open.mjs') : script('open.mjs'), [w.root, '--no-open', '--port', '0', '--claude', FAKE_CLAUDE]);
+  // a newer plugin version: its serve.mjs has one more line (open.mjs writes the plugin's own into the map folder, so a file edited in
+  // the folder would just be replaced)
+  const newer = pluginCopy({ 'assets/serve.mjs': (old) => old + '\n// a newer serve.mjs\n' });
   let tab = null;
   try {
     const a = await open();
@@ -94,9 +98,10 @@ test('open.mjs: the normal flow with a real server still works: it starts one, s
     tab.destroy();
     for (let t = 0; t < 3000; t += 100) { const s = await verifiedStatus(r1, path.dirname(w.map)); if (s?.tabs === 0) break; await sleep(100); }
     // a newer serve.mjs: the running one is stopped (its pid was checked) and a new one is started
-    fs.appendFileSync(path.join(w.map, 'serve.mjs'), '\n// a newer serve.mjs\n');
-    const d = await open();
+    const d = await open(newer);
     assert.equal(d.status, 0, d.stderr);
+    assert.match(d.stdout, /^NOTE  .*serve\.mjs was not what this plugin writes; replaced it$/m);
+    assert.match(fs.readFileSync(path.join(w.map, 'serve.mjs'), 'utf8'), /\/\/ a newer serve\.mjs\n$/);
     const r2 = readServerRecord(recordFile(w.map)).rec;
     assert.ok(r2 && r2.pid !== r1.pid, 'a new server: ' + JSON.stringify(r2));
     assert.equal(MODELMAP_LINE.exec(d.stdout)?.[1], r2.url);
@@ -110,24 +115,27 @@ test('open.mjs: the normal flow with a real server still works: it starts one, s
     assert.ok(!alive(r2.pid));
     assert.ok(!fs.existsSync(recordFile(w.map)));
     assert.equal((await run(path.join(w.map, 'serve.mjs'), ['--stop'])).stdout.trim(), 'The map server was not running.');
-  } finally { tab?.destroy(); await stopServer(w.map); w.done(); }
+  } finally { tab?.destroy(); await stopServer(w.map); w.done(); newer.done(); }
 });
 test('open.mjs: a record that shows up while it waits for the new server is checked like the first one: a server that does not answer for this map is not shown or opened', { skip: skipServer }, async () => {
   mapSource();
-  // serve.mjs of the copy is a stand-in: it writes a record that points at the stand-in server (right in form, pid of a live process),
-  // waits, and then runs the real server, which replaces that record with its own
+  // The serve.mjs that open.mjs writes into the copy is a stand-in (assets/serve.mjs of a plugin copy): it writes a record (planted.json of
+  // the copy) that points at the stand-in server (right in form, pid of a live process), waits, and then runs the real server, which
+  // replaces that record with its own
+  const plugin = pluginCopy({ 'assets/serve.mjs': "import fs from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\nconst dir = path.dirname(fileURLToPath(import.meta.url));\nfs.mkdirSync(path.join(dir, '.cache'), { recursive: true });\nfs.writeFileSync(path.join(dir, '.cache', 'server.json'), fs.readFileSync(path.join(dir, 'planted.json'), 'utf8'), { mode: 0o600 });\nawait new Promise((r) => setTimeout(r, 1500));\nawait import('./serve.real.mjs');\n" });
   const setup = (ctx) => {
     fs.renameSync(path.join(ctx.w.map, 'serve.mjs'), path.join(ctx.w.map, 'serve.real.mjs'));
-    const rec = JSON.stringify(goodRecord(ctx.P, ctx.C));
-    fs.writeFileSync(path.join(ctx.w.map, 'serve.mjs'), "import fs from 'node:fs';\nfs.mkdirSync(" + JSON.stringify(path.dirname(recordFile(ctx.w.map))) + ", { recursive: true });\nfs.writeFileSync(" + JSON.stringify(recordFile(ctx.w.map)) + ", " + JSON.stringify(rec) + ", { mode: 0o600 });\nawait new Promise((r) => setTimeout(r, 1500));\nawait import('./serve.real.mjs');\n");
+    fs.writeFileSync(path.join(ctx.w.map, 'planted.json'), JSON.stringify(goodRecord(ctx.P, ctx.C)));
   };
-  // it answers 200 with another pid: not this record's server
-  await trial({ setup, answer: ANSWERS['wrong pid, other hash'].a }, (ctx) => {
-    assert.equal(ctx.r.status, 0, ctx.out);
-    const m = MODELMAP_LINE.exec(ctx.r.stdout);
-    assert.ok(m, ctx.out);
-    assert.notEqual(Number(m[2]), ctx.P, 'the stand-in is shown as the map\'s server');
-    assert.ok(ctx.stand.requests.length >= 1, 'the record that appeared was not looked at');
-    assert.ok(ctx.child.alive());
-  });
+  try {
+    // it answers 200 with another pid: not this record's server
+    await trial({ setup, plugin, answer: ANSWERS['wrong pid, other hash'].a }, (ctx) => {
+      assert.equal(ctx.r.status, 0, ctx.out);
+      const m = MODELMAP_LINE.exec(ctx.r.stdout);
+      assert.ok(m, ctx.out);
+      assert.notEqual(Number(m[2]), ctx.P, 'the stand-in is shown as the map\'s server');
+      assert.ok(ctx.stand.requests.length >= 1, 'the record that appeared was not looked at');
+      assert.ok(ctx.child.alive());
+    });
+  } finally { plugin.done(); }
 });

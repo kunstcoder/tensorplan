@@ -8,7 +8,7 @@ Three JSON files carry a map from the scan to the page. This page is the contrac
 | `modelmap/descriptions/*.json` | you (Claude), checked by `describe.mjs --check` | `build.mjs` |
 | `modelmap/graph.json` | `build.mjs` | the page (`index.html`), `serve.mjs`, `query.mjs`, `status.mjs` |
 
-The map folder is `<repo>/modelmap/`. `build.mjs` writes `graph.json`, `index.html`, `query.mjs`, `serve.mjs`, `page-safety.mjs`, `descriptions/` and a `.gitignore` that holds `*`; `scan.mjs` writes `.cache/scan.json` there by default.
+The map folder is `<repo>/modelmap/`. `build.mjs` writes `graph.json`, `index.html`, `query.mjs`, `serve.mjs`, `page-safety.mjs`, `descriptions/` and a `.gitignore` that holds `*`; `open.mjs` writes `index.html`, `query.mjs`, `serve.mjs` and `page-safety.mjs` again from `graph.json` when one of them is not what the plugin writes (the folder can come with a repo); `scan.mjs` writes `.cache/scan.json` there by default.
 
 ## Value records
 

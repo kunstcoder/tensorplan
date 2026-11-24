@@ -225,20 +225,73 @@ export function checkNetwork(files) {
 export function checkDynamicCode(files) {
   const f = [];
   for (const x of findJs(files, /(?<![.\w])eval\s*\(/)) f.push(x.file + ':' + x.n + ' eval(');
-  // serve.mjs builds the map's lookup code from <map>/query.mjs, which build.mjs assembles from this plugin's
-  // own assets/graph-query.js and query-cli.mjs: the one allowed use, and exactly one
+  // serve.mjs builds the map's lookup code from <map>/query.mjs, which build.mjs and open.mjs (lib/mapfiles.mjs) assemble from this
+  // plugin's own assets/graph-query.js and query-cli.mjs: the one allowed use, and exactly one. It is built only from the bytes of the
+  // query.mjs this server started with (readQuery, below), so a file put there later is not loaded.
   const fn = findJs(files, /new\s+Function\s*\(/);
   const inServe = fn.filter((x) => x.file === SERVE);
   for (const x of fn) if (x.file !== SERVE) f.push(x.file + ':' + x.n + ' new Function(');
   if (files.has(SERVE) && inServe.length !== 1) f.push(SERVE + ': ' + inServe.length + ' uses of new Function (exactly 1 allowed)');
   if (inServe.length === 1) {
-    const lines = files.get(SERVE).split('\n');
+    const text = files.get(SERVE);
+    const lines = text.split('\n');
     const before = lines.slice(Math.max(0, inServe[0].n - 4), inServe[0].n).join('\n');
-    if (!/const coreSrc = fs\.readFileSync\(path\.join\(here, 'query\.mjs'\), 'utf8'\)/.test(before)) f.push(SERVE + ':' + inServe[0].n + ' new Function does not load the map\'s own query.mjs');
+    if (!/const coreSrc = readQuery\(\)\.split\('\/\/ ---- cli ----'\)\[0\];/.test(before)) f.push(SERVE + ':' + inServe[0].n + ' new Function does not load the map\'s own query.mjs (through readQuery)');
     if (!/new Function\(\x60\$\{coreSrc\.replace/.test(lines[inServe[0].n - 1])) f.push(SERVE + ':' + inServe[0].n + ' new Function is not built from coreSrc');
+    // readQuery reads the map's own query.mjs and gives its text only when the sha256 is the one recorded from the bytes read at the start
+    if (!/const queryFile = path\.join\(here, 'query\.mjs'\);/.test(text)) f.push(SERVE + ': queryFile is not the map\'s own query.mjs');
+    if (!/\[fileURLToPath\(import\.meta\.url\), queryFile, path\.join\(here, 'page-safety\.mjs'\)\]\.map\(\(f\) => fs\.readFileSync\(f\)\)/.test(text) || !/const queryHash = sha256\(queryBytes\)/.test(text)) f.push(SERVE + ': the hash of query.mjs is not recorded from the bytes read at the start');
+    if (!/function readQuery\(\) \{\n {2}const bytes = fs\.readFileSync\(queryFile\);\n {2}if \(sha256\(bytes\) !== queryHash\) throw [^\n]*\n {2}return bytes\.toString\('utf8'\);\n\}/.test(text)) f.push(SERVE + ': readQuery does not check the hash before it gives the text');
+    // Ask: the CLI (which may run node modelmap/query.mjs) is started in one place, and only after readQuery() passed
+    const starts = [...text.matchAll(/spawn\(cli\.cmd/g)];
+    const guard = text.indexOf('readQuery();\n    const run = ENGINES[engine].run(');
+    if (starts.length !== 1 || guard < 0 || guard > starts[0].index) f.push(SERVE + ': the CLI is started without readQuery() first (' + starts.length + ' places that start it)');
   }
   for (const x of findJs(files, /(?<![.\w])import\s*\(/)) f.push(x.file + ':' + x.n + ' dynamic import(');
   for (const x of findJs(files, /from\s+['"](?:node:)?(vm|worker_threads|inspector|wasi|module)['"]|new Worker\(|WebAssembly\.|createRequire\(/)) f.push(x.file + ':' + x.n + ' ' + x.text);
+  return f;
+}
+
+// The four generated files of the map folder (index.html, query.mjs, serve.mjs, page-safety.mjs) come from the plugin, not from the folder:
+// open.mjs makes them (lib/mapfiles.mjs) before it reads the server record or starts serve.mjs, build.mjs writes them the same way, and
+// lib/mapfiles.mjs reads only the plugin's own assets (and graph.json, as data) and writes fresh files.
+const BUILD = 'skills/modelmap/scripts/build.mjs';
+const MAPFILES = 'skills/modelmap/scripts/lib/mapfiles.mjs';
+// what lib/mapfiles.mjs may read: a file of the plugin (ASSETS, and the vendor and ui folders inside it), and the file it compares with (sameBytes)
+const MAPFILES_READS = ['path.join(ASSETS', 'path.join(vendor', 'path.join(uiDir', 'file'];
+const noComments = (text) => text.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+export function checkMapFiles(files) {
+  const f = [];
+  const open = files.get(OPEN);
+  if (open !== undefined) {
+    const code = noComments(open);
+    const make = code.indexOf('writeMapFiles(dir, graph, { onlyIfDifferent: true })');
+    const record = code.indexOf('readServerRecord(stateFile)');
+    const start = code.indexOf('spawn(process.execPath, [serveFile');
+    if (!/import \{[^}]*\bwriteMapFiles\b[^}]*\bcodeHash\b[^}]*\breadGraphFile\b[^}]*\} from '\.\/lib\/mapfiles\.mjs';/.test(open)) f.push(OPEN + ': does not use writeMapFiles, codeHash and readGraphFile from lib/mapfiles.mjs');
+    if (make < 0) f.push(OPEN + ': does not make the map folder\'s files with writeMapFiles(dir, graph, { onlyIfDifferent: true })');
+    if (record < 0 || start < 0) f.push(OPEN + ': the place that reads the server record or the one that starts serve.mjs is not where this check looks');
+    else if (make >= 0 && (make > record || make > start)) f.push(OPEN + ': writeMapFiles must come before the server record is read and before serve.mjs is started');
+    if (!/const graph = readGraphFile\(path\.join\(dir, 'graph\.json'\)\);\nif \(!graph\) \{/.test(code)) f.push(OPEN + ': graph.json is not read as data (readGraphFile) before anything is written');
+    if (!/refuseSymlinks\(dir, \['graph\.json', \.\.\.MAP_FILES, /.test(code)) f.push(OPEN + ': a link at graph.json or at one of the four files is not refused');
+    if (!/const hash = codeHash\(mapFiles\.files\);/.test(code)) f.push(OPEN + ': the hash it compares with the server\'s is not the plugin\'s code hash');
+    if (/readFileSync\(serveFile/.test(code)) f.push(OPEN + ': reads serve.mjs of the map folder');
+  }
+  const build = files.get(BUILD);
+  if (build !== undefined) {
+    if (!/import \{ writeMapFiles \} from '\.\/lib\/mapfiles\.mjs';/.test(build) || !/writeMapFiles\(outDir, graph\)/.test(noComments(build))) f.push(BUILD + ': does not write the four files with writeMapFiles from lib/mapfiles.mjs');
+    if (/(writeFileSync|copyFileSync|cpSync|renameSync)\([^\n]*(index\.html|query\.mjs|serve\.mjs|page-safety\.mjs)/.test(noComments(build))) f.push(BUILD + ': writes one of the four files itself');
+  }
+  const mf = files.get(MAPFILES);
+  if (mf !== undefined) {
+    const code = noComments(mf);
+    for (const x of code.matchAll(/readFileSync\(\s*(path\.join\(\s*\w+|[\w.]+)/g)) if (!MAPFILES_READS.includes(x[1].replace(/\s+/g, ''))) f.push(MAPFILES + ': reads ' + x[1] + ', which is not a file of the plugin');
+    const writes = [...code.matchAll(/writeFileSync\(([^\n]*)\)/g)].map((x) => x[1]);
+    if (writes.length !== 1 || writes[0] !== "file, bytes, { flag: 'wx' }") f.push(MAPFILES + ': the one write must be fs.writeFileSync(file, bytes, { flag: \'wx\' }), got ' + JSON.stringify(writes));
+    if (!/fs\.rmSync\(file, \{ force: true \}\);\n\s*fs\.writeFileSync\(file, bytes, \{ flag: 'wx' \}\);/.test(code)) f.push(MAPFILES + ': a file is not removed before it is written');
+    if ([...code.matchAll(/readJsonFile\(/g)].length !== 1 || !/function readGraphFile\(file\) \{[\s\S]*?readJsonFile\(file\)/.test(code)) f.push(MAPFILES + ': JSON is read from the map folder somewhere besides readGraphFile');
+    for (const re of [/child_process/, /\bimport\s*\(/, /\beval\s*\(/, /new\s+Function/, /\bfetch\s*\(/]) if (re.test(code)) f.push(MAPFILES + ': uses ' + re);
+  }
   return f;
 }
 
@@ -353,8 +406,12 @@ test('network: no fetch, http(s).request, net.connect, WebSocket or XMLHttpReque
   assert.deepEqual(checkNetwork(files), [], UPDATE);
 });
 
-test('dynamic code: no eval, no dynamic import, no vm or workers, and exactly one new Function, in serve.mjs, loading the map\'s own query.mjs (graph-query.js)', () => {
+test('dynamic code: no eval, no dynamic import, no vm or workers, and exactly one new Function, in serve.mjs, loading the map\'s own query.mjs (graph-query.js) only while its sha256 is the one recorded at the start; the CLI of Ask starts only after the same check', () => {
   assert.deepEqual(checkDynamicCode(files), [], UPDATE);
+});
+
+test('map files: open.mjs makes index.html, query.mjs, serve.mjs and page-safety.mjs of the map folder from the plugin (lib/mapfiles.mjs) before it reads the server record or starts serve.mjs; build.mjs uses the same function; mapfiles.mjs reads only plugin files and writes fresh files', () => {
+  assert.deepEqual(checkMapFiles(files), [], UPDATE);
 });
 
 test('pyscan.py: imports only ' + PY_STDLIB.join(', ') + ', and has no exec(, eval(, compile(, __import__, importlib, subprocess, os.system or open() in a write mode', () => {
@@ -416,6 +473,35 @@ test('mutation: the checks fail on a planted hook, dependency, spawn of curl, ex
   assert.notDeepEqual(checkDynamicCode(plant(S, 'eval(text);')), []);
   assert.notDeepEqual(checkDynamicCode(plant(SERVE, "const g = new Function('return 1');")), []);
   assert.notDeepEqual(checkDynamicCode(plant(S, "const m = await import('./x.mjs');")), []);
+  // serve.mjs: query.mjs loaded without the hash check, the check weakened, the CLI started before it
+  for (const [from, to] of [
+    ["const coreSrc = readQuery().split(", "const coreSrc = fs.readFileSync(queryFile, 'utf8').split("], ['if (sha256(bytes) !== queryHash) throw', 'if (false) throw'],
+    ["const queryFile = path.join(here, 'query.mjs');", "const queryFile = path.join(here, '..', 'query.mjs');"], ['const queryHash = sha256(queryBytes)', "const queryHash = ''"],
+    ['    readQuery();\n    const run = ENGINES[engine].run(', '    const run = ENGINES[engine].run('],
+  ]) {
+    const m = new Map(files);
+    assert.ok(m.get(SERVE).includes(from), 'the planted change does not match: ' + from);
+    m.set(SERVE, m.get(SERVE).replace(from, () => to));
+    assert.notDeepEqual(checkDynamicCode(m), [], 'not caught: ' + from);
+  }
+  assert.notDeepEqual(checkDynamicCode(plant(SERVE, "spawn(cli.cmd, ['x']);")), []);
+  // the map folder's files come from the plugin: open.mjs writes them after it looked for a server, build.mjs writes its own, mapfiles.mjs reads or writes the wrong thing
+  const swap = (file, from, to) => { const m = new Map(files); assert.ok(m.get(file).includes(from), 'the planted change does not match: ' + from); m.set(file, m.get(file).replace(from, () => to)); return m; };
+  assert.deepEqual(checkMapFiles(files), []);
+  assert.notDeepEqual(checkMapFiles(swap(OPEN, 'writeMapFiles(dir, graph, { onlyIfDifferent: true })', 'null')), []);
+  // the only call moved to after the server record is read
+  const late = swap(OPEN, 'writeMapFiles(dir, graph, { onlyIfDifferent: true })', '({ files: {}, written: [], missing: [] })');
+  late.set(OPEN, late.get(OPEN).replace('const found = readServerRecord(stateFile);', () => 'const found = readServerRecord(stateFile);\nwriteMapFiles(dir, graph, { onlyIfDifferent: true });'));
+  assert.notDeepEqual(checkMapFiles(late), [], 'a call after the record is read does not count');
+  assert.notDeepEqual(checkMapFiles(swap(OPEN, 'const hash = codeHash(mapFiles.files);', "const hash = 'x';")), []);
+  assert.notDeepEqual(checkMapFiles(swap(OPEN, "const graph = readGraphFile(path.join(dir, 'graph.json'));", "const graph = JSON.parse(fs.readFileSync(path.join(dir, 'graph.json'), 'utf8'));")), []);
+  assert.notDeepEqual(checkMapFiles(plant(OPEN, "const x = fs.readFileSync(serveFile);")), []);
+  assert.notDeepEqual(checkMapFiles(swap(BUILD, 'writeMapFiles(outDir, graph)', 'null')), []);
+  assert.notDeepEqual(checkMapFiles(plant(BUILD, "fs.writeFileSync(path.join(outDir, 'serve.mjs'), 'x');")), []);
+  assert.notDeepEqual(checkMapFiles(plant(MAPFILES, "const copy = fs.readFileSync(path.join(dir, 'serve.mjs'));")), []);
+  assert.notDeepEqual(checkMapFiles(plant(MAPFILES, "fs.writeFileSync(path.join(dir, 'x'), 'y');")), []);
+  assert.notDeepEqual(checkMapFiles(swap(MAPFILES, "{ flag: 'wx' }", '{}')), []);
+  assert.notDeepEqual(checkMapFiles(plant(MAPFILES, "const other = readJsonFile(path.join(dir, 'x.json'));")), []);
   assert.notDeepEqual(checkUnpickle(plant(S, 'const w = torch.load(f);')), []);
   assert.notDeepEqual(checkUnpickle(plant('skills/modelmap/scripts/pyscan.py', 'import pickle')), []);
   // comments and messages are not code

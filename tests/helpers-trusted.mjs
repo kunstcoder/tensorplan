@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { tmpDir, fixture, script } from './helpers.mjs';
+import { tmpDir, fixture, script, repo } from './helpers.mjs';
 import { buildMap, FAKE_CLAUDE } from './helpers-ask.mjs';
 import { readServerRecord } from '../skills/modelmap/scripts/lib/common.mjs';
 
@@ -128,14 +128,32 @@ export function openerShim() {
   return { ...s, urls: () => (fs.existsSync(s.log) ? fs.readFileSync(s.log, 'utf8') : '').split('\n').filter(Boolean) };
 }
 // ---------- a trial: one copy of a map, a stand-in server, a harmless child and a planted record, then open.mjs or serve.mjs --stop ----------
-export const sha12 = (file) => crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex').slice(0, 12);
+// the `hash` a server reports (and open.mjs compares): sha1 over the bytes of serve.mjs, query.mjs and page-safety.mjs of the map folder, in this order
+export const codeHash12 = (map) => { const h = crypto.createHash('sha1'); for (const n of ['serve.mjs', 'query.mjs', 'page-safety.mjs']) h.update(fs.readFileSync(path.join(map, n))); return h.digest('hex').slice(0, 12); };
+
+/**
+ * A copy of the plugin (skills/modelmap) in a temporary folder, with the files in change replaced: { 'assets/serve.mjs': text, ... }, the
+ * path from skills/modelmap, the text or a function from the old text to the new. A stand-in for another plugin version, or for a server
+ * whose start can be watched: open.mjs of the copy writes the copy's assets/serve.mjs, query-cli.mjs and page-safety.mjs into a map folder.
+ * The worktree's own files are never changed by a test.
+ */
+export function pluginCopy(change = {}) {
+  const dir = tmpDir('modelmap-plugin-');
+  const skill = path.join(dir, 'modelmap');
+  fs.cpSync(path.join(repo, 'skills', 'modelmap'), skill, { recursive: true });
+  for (const [file, text] of Object.entries(change)) {
+    const f = path.join(skill, ...file.split('/'));
+    fs.writeFileSync(f, typeof text === 'function' ? text(fs.readFileSync(f, 'utf8')) : text);
+  }
+  return { dir, skill, script: (name) => path.join(skill, 'scripts', name), done: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
 
 /**
  * One trial in its own copy of the map, with a stand-in server (port P), a harmless child (pid C) and the record that setup(ctx)
  * plants. Then open.mjs (--no-open, --port 0, the fake CLI) or serve.mjs --stop runs, and check(ctx) looks at what happened.
  * The server that open.mjs starts is stopped, the child killed, the stand-in closed.
  */
-export async function trial({ kind = 'open', setup, answer, args = [], env, noPort = false }, check) {
+export async function trial({ kind = 'open', setup, answer, args = [], env, noPort = false, plugin }, check) {
   const w = copyMap();
   const child = harmless();
   const ctx = { w, child, C: child.pid, own: [], kind };
@@ -144,7 +162,7 @@ export async function trial({ kind = 'open', setup, answer, args = [], env, noPo
   try {
     await setup(ctx);
     ctx.r = kind === 'open'
-      ? await run(script('open.mjs'), [w.root, ...(args.includes('--open') ? [] : ['--no-open']), ...(noPort ? [] : ['--port', '0']), '--claude', FAKE_CLAUDE, ...args.filter((a) => a !== '--open')], { env })
+      ? await run(plugin ? plugin.script('open.mjs') : script('open.mjs'), [w.root, ...(args.includes('--open') ? [] : ['--no-open']), ...(noPort ? [] : ['--port', '0']), '--claude', FAKE_CLAUDE, ...args.filter((a) => a !== '--open')], { env })
       : await run(path.join(w.map, 'serve.mjs'), ['--stop', ...args], { env });
     ctx.out = ctx.r.stdout + ctx.r.stderr;
     await check(ctx);
@@ -212,7 +230,7 @@ export const ANSWERS = {
     res.writeHead(302, { Location: 'http://127.0.0.1:' + other.port + '/api/status' }); res.end();
   } },
   'the right pid and root, another hash': { kill: true, a: (c) => (req, res) => sendJson(res, 200, { pid: c.C, root: c.w.root, hash: 'other', tabs: 0, editor: null }) },
-  'the right pid and root, this hash': { kill: 'stop only', a: (c) => (req, res) => sendJson(res, 200, { pid: c.C, root: c.w.root, hash: sha12(path.join(c.w.map, 'serve.mjs')), tabs: 0, editor: null, cli: false }) },
+  'the right pid and root, this hash': { kill: 'stop only', a: (c) => (req, res) => sendJson(res, 200, { pid: c.C, root: c.w.root, hash: codeHash12(c.w.map), tabs: 0, editor: null, cli: false }) },
 };
 
 

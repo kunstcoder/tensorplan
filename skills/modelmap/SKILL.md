@@ -56,7 +56,7 @@ The repo is the argument if one was given, otherwise the current directory. In e
 
 4. **Show it.**
    `node ${CLAUDE_SKILL_DIR}/scripts/open.mjs <repo>`
-   It starts the map's local server in the background (127.0.0.1 only) or reuses the running one, opens a browser tab, and prints `MODELMAP  <url>` and how to stop the server. Pass `--no-open` when you have your own preview tool and open the URL there. On a remote or headless machine, skip it and tell the user to open `modelmap/index.html`.
+   First it rewrites `index.html`, `query.mjs`, `serve.mjs` and `page-safety.mjs` in the map folder from the plugin's own files and `graph.json` when they differ (a NOTE line each), so a `modelmap/` that came with the repo never runs its own code. Then it starts the map's local server in the background (127.0.0.1 only) or reuses the running one, opens a browser tab, and prints `MODELMAP  <url>` and how to stop the server. Pass `--no-open` when you have your own preview tool and open the URL there. On a remote or headless machine, skip it and tell the user to open `modelmap/index.html`.
 
 5. **Report**, in the user's language: the URL; the model in 3 to 5 lines (root class, total parameters and their source, the main blocks and how they repeat); every unknown part with its reason and what would resolve it (an `--arg`, a config, a weights file); and, if a weights file was checked, the ✓/✗ result. Say that `descriptions/` is theirs to edit and that the folder stays out of git. Use the numbers the scripts printed; never compute or round your own.
 

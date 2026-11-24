@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 // Derived from floorplan v0.11.0 (MIT): skills/floorplan/scripts/open.mjs
-// Show the map to the user after a build or refresh. Reuses this map's server if it's running (open tabs
-// have already reloaded themselves), restarts it if serve.mjs changed, otherwise starts it in the
+// Show the map to the user after a build or refresh. First it makes the map folder's index.html, query.mjs, serve.mjs and
+// page-safety.mjs what this plugin writes (lib/mapfiles.mjs): the folder can come with a repo, so a file found there is data,
+// never code to run or a page to serve. Then it reuses this map's server if it's running (open tabs have already reloaded
+// themselves), restarts it if its code (serve.mjs, query.mjs, page-safety.mjs) changed, otherwise starts it in the
 // background and opens a browser tab. Prints the URL and how to stop it.
 // usage: node open.mjs [root] [--out DIR] [--no-open] [--port N] [--engine claude|codex] [--model M] [--claude PATH] [--codex PATH]
 //                      [--editor NAME|LINK]   (the editor "Open in editor" opens, e.g. cursor or "zed://file/{path}:{line}")
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { parseArgs, mapDir, unattendedMode, refuseSymlinks, readServerRecord, verifiedStatus, SERVER_URL } from './lib/common.mjs';
+import { MAP_FILES, writeMapFiles, codeHash, readGraphFile } from './lib/mapfiles.mjs';
 import { editorTemplate } from '../assets/page-safety.mjs';
 import { cliLabel } from './lib/agent.mjs';
 
@@ -17,7 +19,7 @@ const args = parseArgs(process.argv.slice(2), { flags: ['no-open', 'unattended']
 const root = path.resolve(args._[0] || '.');
 // unattended: nobody is there to look, so start nothing and open nothing
 if (unattendedMode(args)) {
-  console.log('Unattended mode: not starting the map\'s server or opening a browser. The map is modelmap/index.html; to look around in it with Ask, run node modelmap/serve.mjs in the repo.');
+  console.log('Unattended mode: not starting the map\'s server or opening a browser. The map is modelmap/index.html; to look around in it with Ask, run node modelmap/serve.mjs in the repo, but only after build.mjs (or open.mjs without --unattended) has run on this computer: a modelmap/ that came with a repo is not trusted before that.');
   process.exit(0);
 }
 const dir = args.out ? path.resolve(String(args.out)) : mapDir(root);
@@ -26,14 +28,33 @@ const stateFile = path.join(dir, '.cache', 'server.json');
 const rel = path.relative(process.cwd(), dir).replace(/\\/g, '/') || '.';
 const IDLE_MINUTES = 120;
 
-if (!fs.existsSync(path.join(dir, 'index.html')) || !fs.existsSync(serveFile)) {
+// A repo can ship the map folder (or a file in it) as a symbolic link. Nothing in it is read as the map or written until no link is in
+// the way (--out: the person chose the folder, so only what is inside is checked). The server's log and state go under .cache too.
+refuseSymlinks(dir, ['graph.json', ...MAP_FILES, '.cache', path.join('.cache', 'server.log')].map((f) => path.join(dir, f)), { strict: !args.out });
+// graph.json is data: it has to be a regular file that holds a map's graph, and that is all it is used for here
+const graph = readGraphFile(path.join(dir, 'graph.json'));
+if (!graph) {
   console.error('✗ No built map here yet. Run build.mjs first.');
+  if (fs.existsSync(path.join(dir, 'graph.json'))) console.error(`  (${rel}/graph.json is not the graph of a built map: it needs a list of nodes and a project name)`);
   process.exit(1);
 }
 
 // --editor: checked here too, so a mistake is named now rather than in the server's log
 const editor = args.editor === undefined ? null : editorTemplate(args.editor === true ? '' : String(args.editor));
 if (editor?.error) { console.error(`✗ --editor ${editor.error}`); process.exit(1); }
+
+// Everything under the map folder can be committed by the scanned repo, so what runs and what the browser gets is made by this plugin
+// from graph.json, not found there: index.html, query.mjs, serve.mjs and page-safety.mjs are written here, before a server is looked
+// for, started or restarted. A file that already is what the plugin writes is not touched (a second open changes nothing: no tab
+// reloads, no restart); any other is replaced, and said so.
+let mapFiles;
+try { mapFiles = writeMapFiles(dir, graph, { onlyIfDifferent: true }); } catch (e) {
+  console.error(`✗ Couldn't write the map's files in ${rel}/: ${e.message}`);
+  process.exit(1);
+}
+for (const name of mapFiles.written) console.log(`NOTE  ${rel}/${name} ${mapFiles.missing.includes(name) ? 'was missing; wrote it' : 'was not what this plugin writes; replaced it'}`);
+// what the running server's code (serve.mjs, query.mjs, page-safety.mjs) must be for it to be reused, the files that were just written
+const hash = codeHash(mapFiles.files);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // .cache/server.json can be a file the scanned repo shipped. Nothing in it is used until the file and its values are checked
@@ -56,7 +77,6 @@ function openBrowser(u) {
   const [cmd, a] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', u]] : process.platform === 'darwin' ? ['open', [u]] : ['xdg-open', [u]];
   try { spawn(cmd, a, { stdio: 'ignore', detached: true, windowsHide: true }).unref(); return true; } catch { return false; }
 }
-const hash = crypto.createHash('sha1').update(fs.readFileSync(serveFile)).digest('hex').slice(0, 12);
 
 const found = readServerRecord(stateFile);
 let s = found.rec;
@@ -65,8 +85,8 @@ if (!status) s = null; // stale: nothing of it is used from here on
 let restarted = false;
 const hadTabs = status?.tabs > 0;
 
-// a newer serve.mjs came with this build, or a different --editor was asked for: restart so the map gets it;
-// open tabs reconnect and reload
+// newer code (serve.mjs, query.mjs or page-safety.mjs) came with this plugin, or a different --editor was asked for: restart so the
+// map gets it; open tabs reconnect and reload
 if (status && (status.hash !== hash || (editor?.template && status.editor !== editor.template))) {
   try { process.kill(s.pid); } catch {}
   for (let i = 0; i < 20 && alive(s.pid); i++) await sleep(150);
@@ -77,8 +97,6 @@ if (status && (status.hash !== hash || (editor?.template && status.editor !== ed
 if (!status) {
   const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor'].flatMap((k) => (args[k] ? ['--' + k, String(args[k])] : []));
   if (!args.port && s?.port) pass.push('--port', String(s.port)); // keep the address people have open (s: the server just stopped, which was checked)
-  // the server's log and state go under .cache: not through a symbolic link a repo shipped (--out: only what is inside is checked)
-  refuseSymlinks(dir, [path.join(dir, '.cache'), path.join(dir, '.cache', 'server.log')], { strict: !args.out });
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   // serve.mjs will not start over a symbolic link at its record: take the link away (never what it points to)
   try { if (fs.lstatSync(stateFile).isSymbolicLink()) fs.unlinkSync(stateFile); } catch {}
@@ -118,4 +136,5 @@ const CLI = {
 console.log(health?.cli
   ? `ASK  works: questions run through ${cliLabel(health.engine, health.version)}${health.version ? ' (' + health.version + ')' : ''}`
   : `ASK  needs ${(CLI[health?.want] || CLI.claude).name}, which was not found; the map itself works (${(CLI[health?.want] || CLI.claude).docs})`);
+// the file named here is the plugin's own copy: it was just written (or was already the same) by writeMapFiles above
 console.log(`SERVER  runs in the background, updates open tabs when the map is rebuilt, and stops ${IDLE_MINUTES / 60} hours after the last tab closes. Stop it now: node ${rel}/serve.mjs --stop`);
