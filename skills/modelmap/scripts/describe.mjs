@@ -16,6 +16,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, mapDir, toPosix, fmtNum, readJsonFile } from './lib/common.mjs';
 import { buildContract, checkShape, DIM_TABLE, SHAPE_ONLY, CAPS as CONTRACT_CAPS } from './lib/contract.mjs';
+import { repoLines, indentOf, classText } from './lib/pytext.mjs';
+import { checkFlows, classIndex, FLOW_CAPS } from './lib/flow.mjs';
+import { buildDims } from './lib/contract.mjs';
 
 const args = parseArgs(process.argv.slice(2), { flags: ['check'] });
 const root = path.resolve(String(args._[0] || '.'));
@@ -29,7 +32,6 @@ const MAX_WORKSHEET = 400 * 1024;
 const MAX_FORWARD_LINES = 60;
 const MAX_DOC_CHARS = 1500;
 const MAX_VALUE_CHARS = 120;
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_FORWARD_LINES = 300; // the root's forward() in the Contract section
 
 const SHAPE = {
@@ -46,6 +48,30 @@ const CONTRACT_SHAPE = {
 const CONTRACT_RULE = 'Write a shape only when the code makes it clear; otherwise leave it out. Never write a number that is not in the dims table or the code. '
   + 'A shape is a bracketed list of the symbols of the dims table, B (batch), N (tokens), B or N with a subscript (N_s), integers and "...", at most ' + CONTRACT_CAPS.shape + ' characters. '
   + 'A shape the docstring gives (doc) is kept; yours is shown as an estimate.';
+// the optional "flows" block: how data moves through a class's forward() (lib/flow.mjs checks it)
+const FLOW_SHAPE = {
+  flows: {
+    '<ClassName, or file.py:ClassName when two classes share the name>': {
+      ops: [{ id: 'add1', op: 'add' }],
+      edges: [
+        { from: 'in', to: 'norm1', shape: '[B, N, D]', at: '<file>:<line in forward()>' },
+        { from: 'norm1', to: 'attn', shape: '[B, N, D]' },
+        { from: 'attn', to: 'add1', shape: '[B, N, D]' },
+        { from: 'in', to: 'add1', skip: true, shape: '[B, N, D]', d: '<short note, at most 200 characters>' },
+        { from: 'add1', to: 'out', shape: '[B, N, D]' },
+      ],
+    },
+  },
+};
+const FLOW_RULES = [
+  '- forward() 코드가 보여 주는 엣지(edge)만 쓴다. 코드에 없는 연결을 추측해서 잇지 않는다. 짧게 쓴다.',
+  '- 끝점(endpoint) from, to 는 아래 "direct child modules" 의 속성 이름(attribute name), "in"(forward() 가 받는 입력, input), "out"(forward() 가 돌려주는 값, output), 또는 ops 에 선언한 연산 id 다. 이름이 in 이나 out 인 하위 모듈은 "self.out" 처럼 쓴다.',
+  '- 모듈이 아닌 연산(operation)은 ops 에 둔다: op 는 add, mul, concat, other 중 하나, id 는 "add1" 같은 짧은 이름, label 은 ' + FLOW_CAPS.label + '자 이하(기본값: add "+", mul "×", concat "⧺").',
+  '- 잔차 더하기(residual add)는 add op 하나와, 더해지는 입력에서 그 op 로 가는 skip: true 엣지로 쓴다(위 JSON 의 예).',
+  '- shape 는 코드나 docstring 이 분명히 말할 때만 쓰고, 아니면 shape 를 뺀다. 기호는 차원 표(dims table)의 기호와 B(batch), N(tokens), 아래첨자(N_q, N_kv), 정수, "..." 만 쓴다. 차원 표나 코드에 없는 숫자는 쓰지 않는다. 지도는 모든 shape 를 추정(estimate)으로 표시한다.',
+  '- at 은 그 데이터가 움직이는 forward() 안의 "file:line" 이다(선택, optional). d 는 짧은 메모(note), ' + FLOW_CAPS.d + '자 이하. 제어 문자(control characters)는 쓰지 않는다.',
+  '- 한도(caps): 클래스당 엣지 ' + FLOW_CAPS.edges + '개, op ' + FLOW_CAPS.ops + '개, 흐름이 있는 클래스 ' + FLOW_CAPS.classes + '개.',
+];
 
 // ---------- text safety ----------
 // C0/C1 controls (tab and newline are kept where allowed) and the bidirectional marks and overrides that can
@@ -122,126 +148,6 @@ function fmtValue(v, depth = 0) {
 const argLines = (a) => Object.entries(a || {}).map(([k, r]) => k + ' = ' + fmtValue(r?.v) + (r?.src && r.src !== 'code' ? '  [' + r.src + ']' : '') + (r?.at ? '    (' + r.at + ')' : ''));
 const P = (p) => (!p || p.v === null || p.v === undefined ? '?' : (p.lowerBound ? '≥ ' : '') + fmtNum(p.v) + (p.src ? ' [' + p.src + ']' : ''));
 
-// ---------- reading a repo file as text ----------
-const fileCache = new Map();
-/** The lines of a repo file, or null. Only files inside the root (symlinks resolved); at most 2 MB. */
-function repoLines(repoRoot, rel) {
-  const key = repoRoot + '\0' + rel;
-  if (fileCache.has(key)) return fileCache.get(key);
-  let lines = null;
-  try {
-    const abs = path.resolve(repoRoot, rel);
-    const inside = (base, p) => { const r = path.relative(base, p); return !!r && !r.startsWith('..') && !path.isAbsolute(r); };
-    if (inside(repoRoot, abs) && inside(fs.realpathSync(repoRoot), fs.realpathSync(abs)) && fs.statSync(abs).size <= MAX_FILE_BYTES) {
-      lines = fs.readFileSync(abs, 'utf8').replace(/\r\n?/g, '\n').split('\n');
-    }
-  } catch { lines = null; }
-  fileCache.set(key, lines);
-  return lines;
-}
-
-// Python blocks are found by indentation, as text: good enough for class and def blocks, and a wrong guess
-// only shows more or fewer lines of the repo's own text.
-const indentOf = (l) => /^[ \t]*/.exec(l)[0].replace(/\t/g, '        ').length;
-const blankOrComment = (l) => /^\s*(#.*)?$/.test(l);
-/** Index of the line that ends a header starting at i (a class or def line that may span lines). */
-function headerEnd(lines, i) {
-  let depth = 0;
-  for (let j = i; j < Math.min(lines.length, i + 30); j++) {
-    const t = lines[j].replace(/(["'])(?:\\.|(?!\1).)*\1/g, '""').replace(/#.*$/, '');
-    for (const ch of t) { if ('([{'.includes(ch)) depth++; else if (')]}'.includes(ch)) depth--; }
-    if (depth <= 0 && /:\s*$/.test(t)) return j;
-  }
-  return i;
-}
-/** The open triple-quoted string at the end of a line ('"""', "'''" or null), given the one open at its start. */
-function tripleAfter(line, open) {
-  let i = 0;
-  while (i < line.length) {
-    if (open) {
-      const k = line.indexOf(open, i);
-      if (k < 0) return open;
-      let bs = 0;
-      for (let b = k - 1; b >= 0 && line[b] === '\\'; b--) bs++;
-      i = k + 3;
-      if (bs % 2 === 0) open = null;
-      continue;
-    }
-    const ch = line[i];
-    if (ch === '#') return null;
-    if (ch === '"' || ch === "'") {
-      if (line.startsWith(ch.repeat(3), i)) { open = ch.repeat(3); i += 3; continue; }
-      i++;
-      while (i < line.length && line[i] !== ch) i += line[i] === '\\' ? 2 : 1;
-      i++;
-      continue;
-    }
-    i++;
-  }
-  return open;
-}
-/**
- * Index after the last line of the block whose header ends at h, for a header line indented by ind. Lines
- * inside a triple-quoted string belong to the block whatever their indent.
- */
-function blockEnd(lines, h, ind) {
-  let last = h, open = null;
-  for (let j = h + 1; j < lines.length; j++) {
-    if (!open) {
-      if (blankOrComment(lines[j])) continue;
-      if (indentOf(lines[j]) <= ind) break;
-    }
-    last = j;
-    open = tripleAfter(lines[j], open);
-  }
-  return last + 1;
-}
-
-/** Docstring (first paragraph), forward() text and bases of a class, read from the file as text. */
-function classText(lines, cls, line) {
-  const out = { doc: null, forward: null, bases: null, note: null };
-  if (!lines) { out.note = 'the file could not be read as text'; return out; }
-  const head = new RegExp('^\\s*class\\s+' + String(cls).replace(/\W/g, '') + '\\b');
-  const isHead = (i) => i >= 0 && i < lines.length && head.test(lines[i]);
-  let i = (line || 1) - 1;
-  if (!isHead(i)) {
-    const near = [...Array(11).keys()].map((k) => i - 5 + k).find(isHead);
-    if (near === undefined) { out.note = 'the class line was not found where the scan said'; return out; }
-    i = near;
-  }
-  const ind = indentOf(lines[i]);
-  const h = headerEnd(lines, i);
-  out.bases = (/^\s*class\s+\w+\s*\(([\s\S]*?)\)\s*:/.exec(lines.slice(i, h + 1).join(' ')) || [])[1]?.trim() || null;
-  const body = lines.slice(h + 1, blockEnd(lines, h, ind));
-  // docstring: the first statement of the body, when it is a string literal
-  const firstIdx = body.findIndex((l) => !blankOrComment(l));
-  if (firstIdx >= 0) {
-    const first = body[firstIdx].trim();
-    const m = /^[rRuU]?("""|'''|"|')/.exec(first);
-    if (m) {
-      const q = m[1];
-      let text = first.slice(m[0].length);
-      if (q.length === 3) for (let k = firstIdx; !text.includes(q) && k + 1 < body.length && k - firstIdx < 200;) text += '\n' + body[++k];
-      text = text.split(q)[0];
-      const ls = text.split('\n');
-      const minInd = Math.min(999, ...ls.slice(1).filter((l) => l.trim()).map(indentOf));
-      text = [ls[0].trim(), ...ls.slice(1).map((l) => l.slice(Math.min(minInd, indentOf(l))))].join('\n').trim();
-      out.doc = clip(text.split(/\n\s*\n/)[0].trim(), MAX_DOC_CHARS) || null;
-    }
-  }
-  // forward: a def at the indent of the class body's own statements (not a nested function)
-  const memberInd = firstIdx >= 0 ? indentOf(body[firstIdx]) : ind + 4;
-  const f = body.findIndex((l) => /^\s*(async\s+)?def\s+forward\s*\(/.test(l) && indentOf(l) === memberInd);
-  if (f >= 0) {
-    const at = h + 1 + f;
-    const all = lines.slice(at, blockEnd(lines, headerEnd(lines, at), memberInd));
-    const kept = all.slice(0, MAX_FORWARD_LINES);
-    const cut = memberInd; // the def's own indent (lines of a multi-line string may start further left)
-    out.forward = { start: at + 1, end: at + kept.length, total: all.length, text: kept.map((l) => l.slice(Math.min(cut, indentOf(l)))).join('\n') };
-  }
-  return out;
-}
-
 // ---------- descriptions ----------
 function descriptionFiles() {
   if (!fs.existsSync(descDir)) return [];
@@ -253,7 +159,7 @@ function checkDescriptions(doc, known) {
   const errors = [], warnings = [];
   const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
   if (!isObj(doc)) return { errors: ['the file must hold one JSON object { "classes": {...}, "modules": {...} }'], warnings };
-  for (const k of Object.keys(doc)) if (k !== 'classes' && k !== 'modules' && k !== 'contract') errors.push('unknown top-level key ' + JSON.stringify(clip(k, 60)) + ' (only "classes", "modules" and "contract")');
+  for (const k of Object.keys(doc)) if (!['classes', 'modules', 'contract', 'flows'].includes(k)) errors.push('unknown top-level key ' + JSON.stringify(clip(k, 60)) + ' (only "classes", "modules", "contract" and "flows")');
   const text = (where, field, v, required) => {
     if (v === undefined) { if (required) errors.push(where + ': "' + field + '" is missing'); return; }
     if (typeof v !== 'string') { errors.push(where + ': "' + field + '" must be a string'); return; }
@@ -286,6 +192,11 @@ function checkDescriptions(doc, known) {
     }
   }
   if (doc.contract !== undefined) checkContract(doc.contract, known, errors, warnings);
+  // the flows block (lib/flow.mjs): an unknown class warns; an unknown endpoint, a bad shape, caps, lengths and control characters fail
+  if (doc.flows !== undefined) {
+    const r = checkFlows(doc.flows, { index: known ? known.flowIndex : null, symbols: known ? known.symbols : DIM_TABLE.map(([s]) => s) });
+    errors.push(...r.errors); warnings.push(...r.warnings);
+  }
   return { errors, warnings };
 }
 
@@ -375,6 +286,39 @@ function contractSection(scan, ct) {
   return s;
 }
 
+/**
+ * The Flows part of the worksheet: the rules of the optional "flows" block once (its shape is in the one JSON shape at
+ * the top), then one entry per distinct repo class with a forward() and at least two direct child modules: its key,
+ * where forward() is, its direct children (the endpoint names, repo text fenced) and where its forward() text is. The
+ * text is not repeated when the class's own section above shows it; otherwise (a second class of the same name) it is
+ * given here, fenced. Returns { count, parts: [{ key, lines }] }.
+ */
+function flowsSection(scan, ct, cands, shownAt) {
+  if (!cands.length) return { count: 0, parts: [] };
+  const twice = new Set(cands.map((e) => e.cls).filter((c, i, a) => a.indexOf(c) !== i));
+  const syms = (ct ? ct.dims.map((d) => d.sym) : buildDims(scan).map((d) => d.sym)).concat(SHAPE_ONLY);
+  const head = ['', '## Flows (optional): how data moves through forward()', '',
+    cands.length + ' repo classes have a forward() and two or more direct child modules. For each one whose data path is clear from the code, write an entry in the ' + lit('flows') + ' block of a descriptions file; its shape is in the JSON shape at the top of this worksheet. The page draws it inside every card of the class as arrows with shape labels, and tags every shape as an estimate. Rules (규칙):', '',
+    ...FLOW_RULES, '',
+    'Symbols for shapes: ' + syms.map(lit).join(', ') + ' (B and N may take a subscript, like ' + lit('N_q') + ').'];
+  const parts = [{ key: '(rules)', lines: head }];
+  for (const e of cands) {
+    const key = twice.has(e.cls) ? e.file + ':' + e.cls : e.cls;
+    const s = ['', '### Flow · ' + safeId(key), ''];
+    s.push('- key ' + code(key) + ', forward() at ' + safeId(e.file) + ':' + e.forward.start + '-' + e.forward.last + (e.count > 1 ? '; ' + e.count + ' instances share this flow' : ''), '');
+    s.push(repoBlock('direct child modules of ' + safeId(e.cls) + ', attribute = class: these names are the endpoints', [...e.children].map(([k, c]) => k + ' = ' + c).join('\n'), 'text'), '');
+    const at = shownAt.get(e.cls);
+    if (at && at.file === e.file) s.push('- its forward() text is in section ' + at.no + ' above (' + code(e.cls) + ')');
+    else {
+      const t = classText(repoLines(root, e.file), e.cls, e.line, { maxForwardLines: MAX_FORWARD_LINES, maxDocChars: MAX_DOC_CHARS });
+      if (!t.forward) continue;
+      s.push(repoBlock('forward() · ' + safeId(e.file) + ':' + t.forward.start + '-' + t.forward.end + (t.forward.total > MAX_FORWARD_LINES ? ' (first ' + MAX_FORWARD_LINES + ' of ' + t.forward.total + ' lines)' : ''), t.forward.text));
+    }
+    parts.push({ key, lines: s });
+  }
+  return { count: parts.length - 1, parts };
+}
+
 function loadScan(required) {
   if (!fs.existsSync(scanFile)) {
     if (!required) return null;
@@ -388,11 +332,11 @@ const readDoc = (f) => JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')
 function runCheck() {
   const scan = loadScan(false);
   const known = scan?.root ? collect(scan) : null;
-  if (known) known.contract = buildContract(scan);
+  if (known) { known.contract = buildContract(scan); known.flowIndex = classIndex(scan, { root }); known.symbols = buildDims(scan).map((d) => d.sym); }
   const files = descriptionFiles();
   if (!files.length) { console.error('✗ no descriptions/*.json in ' + shown(outDir) + '. Write them first (describe.mjs without --check prints the shape).'); process.exit(1); }
   const out = [];
-  let errors = 0, warnings = 0, nClasses = 0, nModules = 0;
+  let errors = 0, warnings = 0, nClasses = 0, nModules = 0, nFlows = 0;
   if (!known) { out.push('! no scan at ' + shown(scanFile) + ': class names and paths were not compared with the model'); warnings++; }
   const described = new Set();
   for (const f of files) {
@@ -405,12 +349,13 @@ function runCheck() {
     const cl = doc?.classes, mo = doc?.modules;
     if (cl && typeof cl === 'object' && !Array.isArray(cl)) for (const [k, e] of Object.entries(cl)) { nClasses++; if (typeof e?.d === 'string' && e.d.trim()) described.add(k); }
     if (mo && typeof mo === 'object' && !Array.isArray(mo)) nModules += Object.keys(mo).length;
+    if (doc?.flows && typeof doc.flows === 'object' && !Array.isArray(doc.flows)) nFlows += Object.keys(doc.flows).length;
   }
   if (known) {
     const missing = known.classes.map((c) => c.cls).filter((c) => !described.has(c));
     out.push((missing.length ? '· ' : '✓ ') + 'repo classes described: ' + (known.classes.length - missing.length) + '/' + known.classes.length + (missing.length ? '; without a description: ' + missing.map(safeId).join(', ') : ''));
   }
-  out.push((errors ? '✗ ' : '✓ ') + files.length + ' file(s), ' + nClasses + ' class entries, ' + nModules + ' module entries: ' + errors + ' error(s), ' + warnings + ' warning(s)');
+  out.push((errors ? '✗ ' : '✓ ') + files.length + ' file(s), ' + nClasses + ' class entries, ' + nModules + ' module entries' + (nFlows ? ', ' + nFlows + ' flow entries' : '') + ': ' + errors + ' error(s), ' + warnings + ' warning(s)');
   console.log(out.join('\n'));
   process.exit(errors ? 1 : 0);
 }
@@ -425,7 +370,9 @@ function runWorksheet() {
   const at = (n) => safeId(n.file || '?') + ':' + (n.line ?? '?');
   // the input and output contract of the root's forward(); the JSON shape then shows the optional "contract" block
   const ct = buildContract(scan);
-  const shapeShown = ct ? { ...SHAPE, ...CONTRACT_SHAPE } : SHAPE;
+  // the optional "flows" block: shown in the one JSON shape when a class can have a flow (the Flows section lists them)
+  const flowCands = classIndex(scan, { root }).filter((e) => e.forward && e.children.size >= 2);
+  const shapeShown = { ...SHAPE, ...(ct ? CONTRACT_SHAPE : {}), ...(flowCands.length ? FLOW_SHAPE : {}) };
 
   const head = [];
   head.push('# modelmap worksheet: ' + safeId(r.cls), '');
@@ -454,10 +401,11 @@ function runWorksheet() {
   const size = (a) => Buffer.byteLength(a.join('\n') + '\n');
   const budget = MAX_WORKSHEET - size(head) - size(tail) - 8192;
   const sections = [], left = [];
+  const shownAt = new Map(); // class -> its section, when that section shows forward()
   let used = 0;
   classes.forEach((c, k) => {
     const n = c.first;
-    const t = classText(n.file ? repoLines(root, n.file) : null, c.cls, n.line);
+    const t = classText(n.file ? repoLines(root, n.file) : null, c.cls, n.line, { maxForwardLines: MAX_FORWARD_LINES, maxDocChars: MAX_DOC_CHARS });
     const s = ['', '### ' + (k + 1) + '. ' + safeId(c.cls) + (have.has(c.cls) ? '  (described already)' : ''), ''];
     s.push('- defined at ' + at(n) + (c.files.size > 1 ? ' (the tree also has classes of this name at ' + [...c.files].slice(1, 4).map(safeId).join(', ') + ')' : ''));
     s.push('- instances: ' + c.count + ', e.g. ' + (n.path === '' ? '(the root)' : code(n.path)) + '; parameters of that instance: ' + P(n.params));
@@ -475,8 +423,13 @@ function runWorksheet() {
     if (used + b > budget) { left.push(c.cls); return; }
     used += b;
     sections.push(...s);
+    if (t.forward) shownAt.set(c.cls, { no: k + 1, file: n.file });
   });
   if (left.length) sections.push('', '### Left out (the worksheet is capped at 400 KB)', '', left.length + ' classes: ' + left.map(safeId).join(', ') + '. Read their code yourself, as text.');
+  const flowSec = flowsSection(scan, ct, flowCands, shownAt);
+  const flowLeft = [];
+  for (const s of flowSec.parts) { const b = size(s.lines); if (used + b > budget) { flowLeft.push(s.key); continue; } used += b; sections.push(...s.lines); }
+  if (flowLeft.length) sections.push('', '### Flows left out (the worksheet is capped at 400 KB)', '', flowLeft.length + ' classes: ' + flowLeft.map(safeId).join(', ') + '. Read their forward() yourself, as text.');
 
   let text = [...head, ...sections, ...tail].join('\n') + '\n';
   if (Buffer.byteLength(text) > MAX_WORKSHEET) text = Buffer.from(text).subarray(0, MAX_WORKSHEET - 64).toString('utf8') + '\n' + FENCE + '\n(cut at 400 KB)\n';
@@ -490,6 +443,7 @@ function runWorksheet() {
     JSON.stringify(shapeShown, null, 2),
     'Caps: name ' + CAPS.name + ', d ' + CAPS.d + ', details ' + CAPS.details + ' characters; no control characters (line breaks only in details).',
     ...(ct ? ['"contract" is optional: the shapes of the inputs and output of forward() (the worksheet\'s Contract section). ' + CONTRACT_RULE] : []),
+    ...(flowSec.count ? ['"flows" is optional: how data moves through forward() of ' + flowSec.count + ' classes (the worksheet\'s Flows section lists them with the rules). Every shape you write there is shown as an estimate.'] : []),
     'Then check them: node describe.mjs ' + (again ? again + ' ' : '') + '--check',
   ].join('\n'));
 }

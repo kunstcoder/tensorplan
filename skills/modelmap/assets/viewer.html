@@ -55,11 +55,11 @@
   --ease: cubic-bezier(.16, 1, .3, 1); --ease-io: cubic-bezier(.65, 0, .35, 1);
   --shadow-card: 0 1px 0 rgba(var(--ink), .035) inset, 0 12px 32px -20px rgba(0, 0, 0, .95);
   --shadow-float: 0 0 0 1px rgba(var(--ink), .05), 0 24px 64px -24px rgba(0, 0, 0, .9);
-  --k-import: #6e6e6e; --k-http: #7aa7ff; --k-call: #b49cff; --k-rpc: #8f9bff; --k-event: #f19ac7; --k-queue: #f0c36b; --k-data: #63d2b8; --k-config: #6b7280; --k-contains: #4a4a4a;
+  --k-import: #6e6e6e; --k-http: #7aa7ff; --k-call: #b49cff; --k-rpc: #8f9bff; --k-event: #f19ac7; --k-queue: #f0c36b; --k-data: #63d2b8; --k-config: #6b7280; --k-contains: #4a4a4a; --k-tensor: #6fcfd9; /* modelmap: tensor flow */
   --n-ui: #7cc4ff; --n-service: #b49cff; --n-worker: #f0c36b; --n-library: #6fd7a8; --n-feature: #8fb4ff; --n-data: #63d2b8; --n-config: #a3a3a3;
   --n-test: #f19ac7; --n-script: #f5a66b; --n-infra: #f28b8b; --n-external: #e3a6f0; --n-misc: #8b8b8b; --n-dir: #a3a3a3; --n-file: #a3a3a3;
   --n-module: #a3a3a3; --n-symbol: #c7b8ff; --n-route: #7aa7ff; --n-connector: #8b8b8b;
-  /* modelmap: module kinds */ --n-model: #f0c36b; --n-block: #8fb4ff; --n-attention: #b49cff; --n-mlp: #6fd7a8; --n-norm: #63d2b8; --n-embed: #f5a66b; --n-linear: #7cc4ff; --n-other: #a3a3a3;
+  /* modelmap: module kinds */ --n-io: var(--text-3); --n-op: var(--k-tensor); --n-model: #f0c36b; --n-block: #8fb4ff; --n-attention: #b49cff; --n-mlp: #6fd7a8; --n-norm: #63d2b8; --n-embed: #f5a66b; --n-linear: #7cc4ff; --n-other: #a3a3a3;
   --m-GET: #6fd7a8; --m-POST: #7aa7ff; --m-PUT: #f0c36b; --m-PATCH: #c7a3ff; --m-DELETE: #f28b8b; --m-CALL: #6fcfd9; --m-ANY: #a3a3a3;
   --panel-w: 360px; --pw: calc(var(--panel-w) + 32px); --gutter: 28px;
   color-scheme: dark;
@@ -84,7 +84,7 @@
   --shadow-float: 0 0 0 1px rgba(0, 0, 0, .1), 0 20px 48px -22px rgba(0, 0, 0, .4);
   --shadow-lift: 0 16px 32px -18px rgba(0, 0, 0, .4);
   --shadow-deep: 0 20px 48px -22px rgba(0, 0, 0, .4);
-  --k-import: #50555c; --k-http: #1f5fd6; --k-call: #6a45d6; --k-rpc: #4450cf; --k-event: #c43a85; --k-queue: #a8710c; --k-data: #0b7f6b; --k-config: #4f5661; --k-contains: #8d8d8d;
+  --k-import: #50555c; --k-http: #1f5fd6; --k-call: #6a45d6; --k-rpc: #4450cf; --k-event: #c43a85; --k-queue: #a8710c; --k-data: #0b7f6b; --k-config: #4f5661; --k-contains: #8d8d8d; --k-tensor: #0d7f8c; /* modelmap: tensor flow */
   --n-ui: #1f7ac4; --n-service: #7a5ad8; --n-worker: #a8710c; --n-library: #1a8a5b; --n-feature: #3b6fd1; --n-data: #0f8a76; --n-config: #666666;
   --n-test: #c43c86; --n-script: #c06a1d; --n-infra: #c94a4a; --n-external: #a24dbb; --n-misc: #666666; --n-dir: #666666; --n-file: #666666;
   --n-module: #666666; --n-symbol: #6a55c4; --n-route: #2f6fe0; --n-connector: #666666;
@@ -258,6 +258,29 @@ svg.dim .edge:not(.hl) { opacity: .1; }
 .edge { transition: opacity .3s var(--ease); }
 .pulse { fill: var(--on-hover); filter: drop-shadow(0 0 6px rgba(var(--ink), .8)); }
 .flowlink { fill: none; stroke: var(--on); stroke-opacity: .7; stroke-width: 2; stroke-dasharray: 5 7; animation: flow 1.1s linear infinite; }
+/* modelmap: tensor flow edges inside a block. Every shape label is an estimate, so it has a dashed outline; a skip
+   (residual) connection is dashed and thinner. The in/out of a block's forward() and its ops (+) are small virtual
+   cards, not modules. */
+.edge.k-tensor .trace { stroke-opacity: .72; }
+.edge.k-tensor.skip .trace { stroke-dasharray: 6 5; }
+.edge .ehead { fill: currentColor; stroke: none; transition: opacity .25s var(--ease); }
+.elabel { cursor: pointer; }
+.elabel rect { fill: var(--bg); stroke: currentColor; stroke-opacity: .85; stroke-width: 1; stroke-dasharray: 3 2.5; }
+.elabel text { fill: var(--text-2); font: 500 11px var(--mono); dominant-baseline: central; text-anchor: middle; }
+.edge:hover .elabel text, .edge.hl .elabel text { fill: var(--text); }
+.card.vnode { padding: 0; flex-direction: row; align-items: center; justify-content: center; gap: 6px; color: var(--text-2); font: 600 12.5px var(--mono); }
+.card.vnode.io { border-radius: 12px; background: transparent; box-shadow: inset 0 0 0 1.5px rgba(var(--ink), .18); }
+.card.vnode.io .vio { color: var(--text-4); display: grid; }
+.card.vnode.io .vio svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.card.vnode.op { border-radius: 50%; background: var(--raise); color: var(--text); font-size: 18px; box-shadow: inset 0 0 0 1.5px var(--k-tensor); }
+.est-tag { font: 600 10.5px var(--sans); letter-spacing: .02em; padding: 1px 6px; border-radius: 999px; border: 1px dashed var(--text-4); color: var(--text-2); white-space: nowrap; }
+.fkv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 12.5px; margin-top: 10px; }
+.fkv > span { overflow-wrap: anywhere; }
+.fkv > span:nth-child(odd) { color: var(--text-3); }
+.fkv a { color: var(--text); text-underline-offset: 3px; }
+.fkv .mono, #tooltip .mono { font-family: var(--mono); font-size: 12px; }
+.pd.fnote { color: var(--text-3); font-size: 12px; }
+#legend .lnote { padding: 0 12px 8px 38px; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
 
 /* ---------- floating chrome ---------- */
 #zoom { position: absolute; left: 16px; bottom: 16px; display: flex; padding: 4px; gap: 2px; border-radius: 999px; }
@@ -656,10 +679,11 @@ const NS = 'http://www.w3.org/2000/svg';
 const $ = (s) => document.querySelector(s);
 const svg = $('#svg'), vp = $('#viewport'), panel = $('#panel');
 const elk = new ELK();
-const KINDS = ['import', 'http', 'call', 'rpc', 'event', 'queue', 'data', 'config'];
+// modelmap: tensor is the data flow inside a block (graph links from the descriptions' flows block)
+const KINDS = ['import', 'http', 'call', 'rpc', 'event', 'queue', 'data', 'config', 'tensor'];
 // connection names: plain by default, developer terms when "Show technical detail" is on
-const KIND_TECH = { contains: 'Contains', import: 'Imports', http: 'HTTP', call: 'Calls', rpc: 'RPC', event: 'Events', queue: 'Queues', data: 'Data', config: 'Config' };
-const KIND_PLAIN = { contains: 'Contains', import: 'Uses', http: 'Web requests', call: 'Calls', rpc: 'Calls', event: 'Events', queue: 'Background jobs', data: 'Reads & writes data', config: 'Settings' };
+const KIND_TECH = { contains: 'Contains', import: 'Imports', http: 'HTTP', call: 'Calls', rpc: 'RPC', event: 'Events', queue: 'Queues', data: 'Data', config: 'Config', tensor: 'Tensor flow' };
+const KIND_PLAIN = { contains: 'Contains', import: 'Uses', http: 'Web requests', call: 'Calls', rpc: 'Calls', event: 'Events', queue: 'Background jobs', data: 'Reads & writes data', config: 'Settings', tensor: 'Tensor flow' };
 const KIND_LABEL = new Proxy({}, { get: (_, k) => (technical() ? KIND_TECH : KIND_PLAIN)[k] || k });
 let technicalFlag = false;
 const technical = () => technicalFlag;
@@ -790,7 +814,9 @@ Object.assign(P, { model: P.library, block: P.feature,
   norm: '<path d="M3 20h18"/><path d="M4 20c3.5 0 4.5-14 8-14s4.5 14 8 14"/>',
   embed: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16"/>',
   linear: '<path d="M8 4H5v16h3M16 4h3v16h-3M9 12h6"/>',
-  other: '<rect x="5" y="5" width="14" height="14" rx="4"/>' });
+  other: '<rect x="5" y="5" width="14" height="14" rx="4"/>',
+  op: '<circle cx="12" cy="12" r="8"/><path d="M12 8.5v7M8.5 12h7"/>' });
+P.io = P.in; // modelmap: the in and out of a flow
 const icon = (k) => `<svg viewBox="0 0 24 24">${P[k] || P.file}</svg>`;
 const iconI = (k) => `<svg class="i" viewBox="0 0 24 24">${P[k] || P.file}</svg>`;
 const symIcon = (kind) => (['class', 'interface', 'protocol', 'actor', 'struct', 'type', 'enum', 'record', 'trait', 'object'].includes(kind) ? 'class' : 'function');
@@ -877,8 +903,11 @@ function info(item) {
 }
 const connEntity = (id) => id.replace(/^x:(in|out):/, '');
 const nameOf = (item) => info(item.startsWith('x:') ? connEntity(item) : item).name;
+// modelmap: the virtual nodes of a flow (the in and out of a block's forward() and its ops) are cards, never modules
+const vnodeOf = (item) => { const n = typeof item === 'string' && item.startsWith('n:') ? nodes.get(item.slice(2)) : null; return n && n.virtual ? n : null; };
+const flowName = (item) => { const v = vnodeOf(item); return v?.op ? `${v.label} (${v.op.id})` : nameOf(item); };
 // in plain mode a file opens only when it has endpoints to show (its exports are developer detail)
-const visibleKids = (item) => (kids.get(item) || []).filter((k) => technical() || !k.startsWith('s:'));
+const visibleKids = (item) => (kids.get(item) || []).filter((k) => (technical() || !k.startsWith('s:')) && (state.kinds.tensor || !vnodeOf(k))); // modelmap: a flow's in, out and ops go with its edges
 const drillable = (item) => /^(n:|d:|f:)/.test(item) && visibleKids(item).length > 0;
 const methodVar = (m) => `var(--m-${m in METHODS ? m : 'ANY'})`;
 const colorOf = (i) => i.type === 'route' ? methodVar(i.r.m) : `var(--n-${i.type === 'node' ? i.kind : i.type === 'symbol' ? 'symbol' : i.type})`;
@@ -1099,6 +1128,8 @@ function connectorHTML(c) {
 }
 /** Hover tooltip for a card: what it is, where it lives, and what you can do with it. */
 function cardTip(id) {
+  const vn = vnodeOf(id); // modelmap: the in, out or an op of a flow
+  if (vn) return `<div class="tt">${h(flowName(id))}</div><div class="td">${h(vn.summary)}</div>`;
   if (id.startsWith('x:')) {
     const i = info(connEntity(id));
     return `<div class="tt">${id.startsWith('x:in') ? 'From' : 'To'} ${h(i.name)}</div>${i.desc ? `<div class="td">${h(i.desc)}</div>` : ''}<div class="th"><span><span class="kbd">2×click</span> go there</span><span><span class="kbd">right-click</span> more</span></div>`;
@@ -1128,13 +1159,27 @@ function recentTip(id) {
 // ======================= layout =======================
 const measure = document.createElement('canvas').getContext('2d');
 const textW = (s, px = 12, w = 500) => { measure.font = `${w} ${px}px Inter, system-ui, sans-serif`; return measure.measureText(s).width; };
+// modelmap: sizes for a flow: the small in/out and op cards, and a tensor edge's shape label (monospace)
+const monoW = (s, px = 11) => { measure.font = `500 ${px}px "JetBrains Mono", ui-monospace, monospace`; return measure.measureText(s).width; };
+const vnodeSize = (item) => { const v = vnodeOf(item); return v.kind === 'op' ? { width: 46, height: 46 } : { width: Math.round(clamp(textW(v.label, 12.5, 600) + 56, 78, 160)), height: 40 }; };
+const edgeLabel = (e) => { if (e.k !== 'tensor') return null; const t = shapesOf(e).join(' · '); return t ? { text: t, width: Math.ceil(monoW(t)) + 14, height: 18 } : null; };
 
+// modelmap: a block's data flow wraps into rows that fit the window (the plan's mock has two), with less room between the
+// layers since every shape label takes a layer of its own. ELK's wrapping can cut an edge short in a dense flow: then the
+// flow is laid out again in one row (reachesEnds).
+const FLOW_LAYOUT = (wrap) => { const a = freeArea(); return { 'elk.layered.spacing.nodeNodeBetweenLayers': '24', ...(wrap ? { 'elk.layered.wrapping.strategy': 'MULTI_EDGE', 'elk.aspectRatio': clamp((a.w / a.h) * 1.6, 1.5, 4).toFixed(2) } : {}) }; };
+const reachesEnds = (res) => {
+  const box = new Map((res.children || []).map((c) => [c.id, c]));
+  const near = (p, c) => !!p && !!c && p.x >= c.x - 3 && p.x <= c.x + c.width + 3 && p.y >= c.y - 3 && p.y <= c.y + c.height + 3;
+  return (res.edges || []).every((e) => { const s = e.sections || []; return s.length && near(s[0].startPoint, box.get(e.sources[0])) && near(s[s.length - 1].endPoint, box.get(e.targets[0])); });
+};
 async function layout(view) {
   const deg = new Map();
   const bump = (id) => deg.set(id, (deg.get(id) || 0) + 1);
   for (const e of view.edges) { bump(e.a); bump(e.b); }
   const children = [];
   for (const item of view.visible) {
+    if (vnodeOf(item)) { children.push({ id: item, ...vnodeSize(item) }); continue; } // modelmap
     const [w, hh] = SIZES[info(item).type] || SIZES.file;
     const ext = item.startsWith('n:') && nodes.get(item.slice(2)).kind === 'external';
     children.push({ id: item, width: w, height: Math.max(hh + cardExtraH(item) + (answerNote(item) ? NOTE_H : 0), (deg.get(item) || 0) * 7 + 28), ...(ext ? { layoutOptions: { 'elk.layered.layering.layerConstraint': 'LAST' } } : {}) });
@@ -1143,14 +1188,17 @@ async function layout(view) {
     children.push({ id: c.id, width: clamp(textW(info(c.entity).name, 13) + 84, 150, 320), height: Math.max(42, (deg.get(c.id) || 0) * 7 + 14),
       layoutOptions: { 'elk.layered.layering.layerConstraint': c.side === 'in' ? 'FIRST_SEPARATE' : 'LAST_SEPARATE' } });
   }
+  // modelmap: a block's data flow (tensor edges): see FLOW_LAYOUT
+  const flowView = MODEL && view.edges.some((e) => e.k === 'tensor');
   // modelmap: a model view with no connections keeps the modules in the order the code makes them, row by row
   if (MODEL && !view.edges.length && !view.connectors.length) {
     const r = svg.getBoundingClientRect();
     return elk.layout({ id: 'g', children, edges: [], layoutOptions: { 'elk.algorithm': 'rectpacking', 'elk.aspectRatio': String(clamp((r.width || 1400) / (r.height || 900), 1, 3)), 'elk.rectpacking.orderBySize': 'false', 'elk.spacing.nodeNode': '32', 'elk.padding': '[top=40,left=40,bottom=40,right=40]' } });
   }
-  return elk.layout({
-    id: 'g', children,
-    edges: view.edges.map((e) => ({ id: e.id, sources: [e.a], targets: [e.b] })),
+  const run = (wrap) => elk.layout({ // modelmap: run(wrap), see FLOW_LAYOUT
+    id: 'g', children: structuredClone(children),
+    // modelmap: a tensor edge's shape is an ELK label, so the layout leaves room for it on the edge
+    edges: view.edges.map((e) => { const lb = edgeLabel(e); return { id: e.id, sources: [e.a], targets: [e.b], ...(lb ? { labels: [{ id: e.id + '~l', text: lb.text, width: lb.width, height: lb.height, layoutOptions: { 'elk.edgeLabels.inline': 'true' } }] } : {}) }; }),
     layoutOptions: {
       'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.spacing.nodeNodeBetweenLayers': '130', 'elk.spacing.nodeNode': '32',
@@ -1158,8 +1206,13 @@ async function layout(view) {
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX', 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
       'elk.layered.thoroughness': '12', 'elk.separateConnectedComponents': 'true', 'elk.spacing.componentComponent': '80',
       'elk.padding': '[top=40,left=40,bottom=40,right=40]',
+      'elk.edgeLabels.placement': 'CENTER', // modelmap: shape labels
+      ...(flowView ? FLOW_LAYOUT(wrap) : {}),
     },
   });
+  if (!flowView) return run(false);
+  const res = await run(true);
+  return reachesEnds(res) ? res : run(false);
 }
 
 // ======================= render =======================
@@ -1195,7 +1248,7 @@ async function render(opts = {}) {
   renderContext(); renderCrumbs(); renderLegend(view);
   $('#empty').hidden = view.visible.length > 0;
   $('#empty').textContent = view.visible.length ? '' : 'Nothing inside.';
-  if (opts.keepTransform) applyTransform(); else fit(false);
+  if (opts.keepTransform) applyTransform(); else openView(false); // modelmap: a flow view opens readable (openView)
   applySelection();
   if (opts.after) opts.after();
 }
@@ -1213,16 +1266,18 @@ function draw(view, res) {
   for (const re of res.edges || []) {
     const e = edgeById.get(re.id), s = re.sections?.[0];
     if (!s) continue;
-    const pts = [s.startPoint, ...(s.bendPoints || []), s.endPoint];
+    const pts = re.sections.flatMap((x) => [x.startPoint, ...(x.bendPoints || []), x.endPoint]); // modelmap: a wrapped flow may split an edge
     const d = roundedPath(pts, 14);
-    const g = el('g', { class: `edge k-${e.k}`, style: `color:var(--k-${e.k})` }, gEdges);
-    const width = 1.3 + Math.min(4, Math.log2(e.w + 1)) * 0.5;
+    const skip = e.k === 'tensor' && e.links.every((l) => l.skip); // modelmap: a skip (residual) connection is dashed and thinner
+    const g = el('g', { class: `edge k-${e.k}${skip ? ' skip' : ''}`, style: `color:var(--k-${e.k})` }, gEdges);
+    const width = skip ? 1.1 : 1.3 + Math.min(4, Math.log2(e.w + 1)) * 0.5;
     el('path', { class: 'trace', d, 'stroke-width': width.toFixed(2) }, g);
     el('path', { class: 'flow', d }, g);
     el('path', { class: 'hit', d }, g);
     const pg = el('g', { class: `edge k-${e.k}`, style: `color:var(--k-${e.k})` }, gPorts);
     el('circle', { class: 'port', cx: s.startPoint.x, cy: s.startPoint.y, r: 3.4 }, pg);
-    el('circle', { class: 'port', cx: s.endPoint.x, cy: s.endPoint.y, r: 3.4 }, pg);
+    if (e.k === 'tensor') { el('path', { class: 'ehead', d: arrowHead(pts) }, pg); drawEdgeLabel(g, e, re, pts); } // modelmap: an arrow and the shape
+    else el('circle', { class: 'port', cx: s.endPoint.x, cy: s.endPoint.y, r: 3.4 }, pg);
     g.addEventListener('mouseenter', (ev) => showTip(ev, edgeTip(e)));
     g.addEventListener('mousemove', moveTip);
     g.addEventListener('mouseleave', hideTip);
@@ -1236,7 +1291,7 @@ function draw(view, res) {
   for (const c of res.children) {
     const g = el('g', { class: 'node', transform: `translate(${c.x},${c.y})` }, gNodes);
     const fo = el('foreignObject', { x: -GUTTER, y: -GUTTER, width: c.width + GUTTER * 2, height: c.height + GUTTER * 2 }, g);
-    fo.innerHTML = `<div class="fo-pad">${c.id.startsWith('x:') ? connectorHTML(view.connectors.find((x) => x.id === c.id)) : cardHTML(c.id)}</div>`;
+    fo.innerHTML = `<div class="fo-pad">${c.id.startsWith('x:') ? connectorHTML(view.connectors.find((x) => x.id === c.id)) : vnodeOf(c.id) ? vnodeHTML(c.id) : cardHTML(c.id)}</div>`;
     fo.querySelector('.card')?.style.setProperty('--d', `${delay.get(c.id)}ms`);
     g.addEventListener('click', (ev) => { ev.stopPropagation(); select(c.id); });
     g.addEventListener('dblclick', (ev) => { ev.stopPropagation(); if (ev.button !== 0) return; hideTip(); open(c.id); });
@@ -1246,6 +1301,36 @@ function draw(view, res) {
     g.addEventListener('mouseleave', hideTip);
     state.chipEls.set(c.id, g);
   }
+}
+
+// modelmap: the pieces of a flow drawing. An arrow at the end of a tensor edge; its shape label where ELK placed it
+// (else at the middle of the path), with a background that keeps the line readable and a dashed outline: an estimate.
+const arrowHead = (pts) => {
+  const a = pts[pts.length - 2], b = pts[pts.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const ux = (b.x - a.x) / L, uy = (b.y - a.y) / L, bx = b.x - ux * 8, by = b.y - uy * 8;
+  return `M${b.x},${b.y}L${(bx - uy * 4).toFixed(1)},${(by + ux * 4).toFixed(1)}L${(bx + uy * 4).toFixed(1)},${(by - ux * 4).toFixed(1)}Z`;
+};
+function midPoint(pts) {
+  const seg = pts.slice(1).map((p, i) => Math.hypot(p.x - pts[i].x, p.y - pts[i].y));
+  let half = seg.reduce((s, x) => s + x, 0) / 2;
+  for (let i = 0; i < seg.length; i++) {
+    if (half <= seg[i] && seg[i] > 0) { const t = half / seg[i]; return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * t, y: pts[i].y + (pts[i + 1].y - pts[i].y) * t }; }
+    half -= seg[i];
+  }
+  return pts[0];
+}
+function drawEdgeLabel(g, e, re, pts) {
+  const lb = edgeLabel(e);
+  if (!lb) return;
+  const at = re.labels?.[0], m = at && Number.isFinite(at.x) ? { x: at.x + at.width / 2, y: at.y + at.height / 2 } : midPoint(pts);
+  const lg = el('g', { class: 'elabel' }, g);
+  el('rect', { x: (m.x - lb.width / 2).toFixed(1), y: (m.y - lb.height / 2).toFixed(1), width: lb.width, height: lb.height, rx: 5 }, lg);
+  el('text', { x: m.x.toFixed(1), y: m.y.toFixed(1) }, lg).textContent = revealHidden(lb.text);
+}
+function vnodeHTML(item) {
+  const v = vnodeOf(item);
+  if (v.kind === 'op') return `<div class="card vnode op"><span>${h(v.label)}</span></div>`;
+  return `<div class="card vnode io"><span class="vio">${icon(v.io === 'out' ? 'out' : 'in')}</span><span>${h(v.label)}</span></div>`;
 }
 
 /** Brackets over the three columns of a view that has outside connections: what uses this part (left),
@@ -1292,7 +1377,36 @@ function endpointsOf(e) {
   for (const l of e.links) for (const [ri] of l.calls || []) if (ri != null) m.set(ri, (m.get(ri) || 0) + 1);
   return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([ri, n]) => ({ r: routes[ri], i: ri, n }));
 }
+// ======================= modelmap: tensor flow edges =======================
+// A tensor edge is a link of kind "tensor" between two cards inside a block (lib/flow.mjs). Claude wrote it from the
+// block's forward(), so its shape is ALWAYS an estimate. Names, shapes, notes and file:line are repo or Claude text:
+// escaped with h(), never built into markup.
+const FLOW_NOTE = '형태(shape)는 forward() 를 읽고 쓴 추정(estimate)이다. 코드를 실행하지 않았다.';
+const shapesOf = (e) => [...new Set(e.links.map((l) => l.shape?.v).filter((v) => typeof v === 'string' && v))];
+const estTag = '<span class="est-tag" title="Claude read forward(); nothing was run">estimate</span>';
+function tensorTip(e) {
+  const sh = shapesOf(e), d = e.links.map((l) => l.d).find(Boolean), at = e.links.map((l) => l.at).find(Boolean);
+  return `<div class="tt">${h(flowName(e.a))} → ${h(flowName(e.b))}</div><div class="td">${h(KIND_LABEL.tensor)}${e.links.every((l) => l.skip) ? ' · skip connection' : ''}${sh.length ? ` · <span class="mono">${h(sh.join(' · '))}</span> ${estTag}` : ' · no shape written'}</div>${d ? `<div class="td">${h(d)}</div>` : ''}${at ? `<div class="tp">${h(at)}</div>` : ''}<div class="th"><span><span class="kbd">click</span> details</span><span><span class="kbd">right-click</span> more</span></div>`;
+}
+function tensorPanel(e) {
+  const ep = (id) => (id.startsWith('x:') ? connEntity(id) : id);
+  const sh = shapesOf(e), skip = e.links.every((l) => l.skip);
+  const kv = [['From', h(flowName(e.a))], ['To', h(flowName(e.b))], ['Shape', sh.length ? `<span class="mono">${h(sh.join(' · '))}</span> ${estTag}` : 'not written: the code did not make it clear']];
+  if (skip) kv.push(['Kind', 'skip connection (residual)']);
+  for (const at of [...new Set(e.links.map((l) => l.at).filter(Boolean))]) {
+    const m = /^(.*):(\d+)$/.exec(at), url = m && editorUrl(m[1], m[2]);
+    kv.push(['At', url ? `<a class="mono" href="${hk(url)}" title="Open in editor">${h(at)}</a>` : `<span class="mono">${h(at)}</span>`]);
+  }
+  const notes = [...new Set(e.links.map((l) => l.d).filter(Boolean))];
+  return `<div class="sec"><div class="ph"><span class="ico" style="--c:var(--k-tensor)">${icon('feature')}</span><span class="kind">${h(KIND_LABEL.tensor)}</span></div>
+      <h2 class="pt">${h(flowName(e.a))} → ${h(flowName(e.b))}</h2>
+      <div class="fkv">${kv.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')}</div>
+      ${notes.map((x) => `<p class="pd">${h(x)}</p>`).join('')}
+      <p class="pd fnote">${h(FLOW_NOTE)}</p>
+      <div class="actions"><button class="btn soft" data-go="${hk(ep(e.a))}">Go to source</button><button class="btn soft" data-go="${hk(ep(e.b))}">Go to target</button></div></div>`;
+}
 function edgeTip(e) {
+  if (e.k === 'tensor') return tensorTip(e);
   if (e.k === 'contains') return `<div class="tt">${h(nameOf(e.a))} contains ${h(nameOf(e.b))}</div>`;
   const eps = endpointsOf(e);
   const names = [...new Set(e.links.flatMap((l) => l.names || []))];
@@ -1402,6 +1516,42 @@ function fit(animate) {
   const k = Math.min(a.w / (b.w + 40), a.h / (b.h + 20), 1.1);
   setT({ k, x: a.x + (a.w - b.w * k) / 2 - b.x * k, y: a.y + Math.max(0, (a.h - b.h * k) / 2) - b.y * k }, animate);
 }
+// modelmap: a view with tensor edges (a block's flow) is wide, and fit() would open it at about 0.55, where card titles
+// and shape labels cannot be read. It opens at a scale of at least READABLE_MIN (never above 1.0): centred when the whole
+// flow fits there, else anchored at the flow's start (its left and top edge, so "in" and the first row are in view).
+// Every other view opens exactly as fit() does. Fit to screen, F and the fit button still fit everything.
+const READABLE_MIN = 0.82; // 11 px shape labels show at 9 px, 15 px card titles at 12.3 px
+const isFlowView = () => !!state.view?.edges?.some((e) => e.k === 'tensor');
+/** The top left corner of what is drawn (cards and edge paths), in map units: where a flow starts. */
+function flowStart() {
+  const L = state.layout || {};
+  const xs = [], ys = [];
+  for (const c of L.children || []) { xs.push(c.x); ys.push(c.y); }
+  for (const e of L.edges || []) for (const s of e.sections || []) for (const p of [s.startPoint, ...(s.bendPoints || []), s.endPoint]) { xs.push(p.x); ys.push(p.y); }
+  return xs.length ? { x: Math.min(...xs), y: Math.min(...ys) } : { x: 0, y: 0 };
+}
+const START_MARGIN = 24;
+function openView(animate) {
+  const b = state.bounds;
+  if (!b || !isFlowView()) return fit(animate);
+  const a = freeArea();
+  const all = Math.min(a.w / (b.w + 40), a.h / (b.h + 20));
+  if (all >= READABLE_MIN) {
+    const k = Math.min(all, 1);
+    return setT({ k, x: a.x + (a.w - b.w * k) / 2 - b.x * k, y: a.y + Math.max(0, (a.h - b.h * k) / 2) - b.y * k }, animate);
+  }
+  const s = flowStart(), k = READABLE_MIN;
+  setT({ k, x: a.x + START_MARGIN - s.x * k, y: a.y + START_MARGIN / 2 - s.y * k }, animate);
+}
+/** The details panel or the answer sheet opened or closed: other views fit again as before; a flow view keeps its
+ *  scale and only moves when its start left the free area. */
+function refit(animate) {
+  if (!state.bounds || !isFlowView()) return fit(animate);
+  const a = freeArea(), s = flowStart(), { k, x, y } = state.t;
+  const sx = x + s.x * k, sy = y + s.y * k;
+  if (sx >= a.x && sx <= a.x + a.w - START_MARGIN && sy >= a.y - START_MARGIN && sy <= a.y + a.h - START_MARGIN) return;
+  setT({ k, x: a.x + START_MARGIN - s.x * k, y: a.y + START_MARGIN / 2 - s.y * k }, animate);
+}
 function zoomBy(f, cx, cy) {
   const r = stageRect();
   cx ??= r.width / 2; cy ??= r.height / 2;
@@ -1467,7 +1617,7 @@ let lastWidth = innerWidth;
 window.addEventListener('resize', () => {
   const heightOnly = innerWidth === lastWidth; lastWidth = innerWidth;
   if (matchMedia('(pointer: coarse)').matches && (heightOnly || drag || pinch)) return;
-  fit(false);
+  openView(false); // modelmap: a flow view stays readable
 });
 $('#z-in').onclick = () => zoomBy(1.25);
 $('#z-out').onclick = () => zoomBy(0.8);
@@ -1489,7 +1639,7 @@ function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   let v = p.get('v') || 'root', s = p.get('s');
   if (v !== 'root' && !parentOf.has(v)) v = 'root';
-  if (s && !parentOf.has(s) && !s.startsWith('x:') && !s.startsWith('m:')) s = null;
+  if (s && !parentOf.has(s) && !s.startsWith('x:') && !s.startsWith('m:') && !s.startsWith('edge:')) s = null; // modelmap: edge:<from>><to> selects an edge
   return { v, s };
 }
 window.addEventListener('popstate', () => { const { v, s } = readHash(); go(v, { select: s, push: false }); });
@@ -1547,12 +1697,20 @@ function centerOn(item) {
 
 // ======================= selection =======================
 function select(sel) {
-  custom.panel = null; state.selected = sel; if (typeof sel === 'string' || sel === null) setHash(state.container, sel); applySelection(); renderPanel();
+  custom.panel = null; state.selected = sel; if (typeof sel === 'string' || sel === null) setHash(state.container, sel); else if (sel.edge) setHash(state.container, edgeHashOf(sel.edge)); applySelection(); renderPanel();
   // on a phone, tapping a box shows its details: open the sheet, then bring the box into the part of the screen the sheet leaves free
   if (sel && isPhone() && document.body.classList.contains('no-panel')) { setPanel(true); if (typeof sel === 'string') bringIntoView(sel); }
 }
+// modelmap: an edge in the address, #s=edge:<from card>><to card>, so a link can open one edge and its panel
+const edgeHashOf = (id) => { const x = state.edgeEls?.get(id)?.e; return x ? `edge:${x.a}>${x.b}` : null; };
+function edgeFromHash(sel) {
+  if (typeof sel !== 'string' || !sel.startsWith('edge:')) return sel;
+  const [a, b] = sel.slice(5).split('>');
+  const x = [...(state.edgeEls?.values() || [])].find((v) => v.e.a === a && v.e.b === b);
+  return x ? { edge: x.e.id } : null;
+}
 function applySelection() {
-  const sel = state.selected;
+  const sel = (state.selected = edgeFromHash(state.selected));
   svg.classList.remove('dim');
   for (const g of state.chipEls?.values() || []) g.classList.remove('sel', 'hl');
   for (const { g, pg } of state.edgeEls?.values() || []) { g.classList.remove('hl'); pg.classList.remove('hl'); }
@@ -1623,6 +1781,7 @@ function renderLegend(view) {
     lab.querySelector('input').onchange = (ev) => { state.kinds[k] = ev.target.checked; store.set('kinds', state.kinds); render({ keepTransform: true }); };
     L.appendChild(lab);
   }
+  if (total.tensor) L.insertAdjacentHTML('beforeend', '<div class="lnote">Every shape on a tensor flow edge is an estimate: Claude read forward(), nothing ran. A dashed line is a skip connection.</div>'); // modelmap
   L.appendChild(techRow());
   if (recentBy.size) {
     const lab = document.createElement('label'); lab.className = 'tech' + (recentShown ? '' : ' off');
@@ -1676,7 +1835,7 @@ function header(i) {
 }
 
 function renderPanel() {
-  const sel = state.selected;
+  const sel = (state.selected = edgeFromHash(state.selected)); // modelmap
   let html;
   if (sel && typeof sel === 'object' && sel.edge) html = edgePanel(state.edgeEls.get(sel.edge)?.e);
   else if (sel && sel.startsWith('x:')) html = itemPanel(connEntity(sel), true);
@@ -1759,6 +1918,7 @@ function connections(item) {
   const peerOf = (x) => { const ch = chain(x); const idx = ch.findIndex((y) => own.has(y)); return ch[idx - 1] || x; };
   const out = new Map(), inn = new Map();
   for (const l of G.links) {
+    if (l.k === 'tensor') continue; // modelmap: a block's data flow shows in its Flow section, not as uses
     const ia = inside(l.a), ib = inside(l.b);
     if (ia === ib) continue;
     const peer = peerOf(ia ? l.b : l.a);
@@ -1792,7 +1952,7 @@ function itemPanel(item, viaConnector) {
         ${langs.length && !PLAN ? `<div class="bar">${langs.map(([, v], k) => `<span style="flex:${v};background:${palette[k]}"></span>`).join('')}</div><div class="legend-row">${langs.map(([l, v], k) => `<span><span class="dot" style="background:${palette[k]}"></span>${h(l)} ${Math.round((v / tot) * 100)}%</span>`).join('')}</div>` : ''}</div>`;
     }
     if (n?.packages?.length || n?.hosts?.length || n?.tags?.length) html += `<div class="sec"><h3>Matched by</h3><div class="tags">${[...n.packages.map((p) => 'pkg ' + p), ...n.hosts.map((p) => 'host ' + p), ...n.tags.map((t) => '#' + t)].map((t) => `<span class="tag">${h(t)}</span>`).join('')}</div></div>`;
-    html += listSec('Inside', (kids.get(item) || []).filter((k) => !k.startsWith('f:')).map((k) => rowFor(k)));
+    html += listSec('Inside', (kids.get(item) || []).filter((k) => !k.startsWith('f:') && !vnodeOf(k)).map((k) => rowFor(k)));
     const c = connections(item);
     html += listSec('Used by', c.inn) + listSec('Depends on', c.out);
     const fl = (i.d ? i.d.files : G.files.filter((f) => chain('f:' + f.p).includes(item))).slice().sort((a, b) => b.loc - a.loc);
@@ -1839,6 +1999,7 @@ function itemPanel(item, viaConnector) {
 
 function edgePanel(e) {
   if (!e) return '';
+  if (e.k === 'tensor') return tensorPanel(e); // modelmap
   const eps = endpointsOf(e);
   const names = [...new Set(e.links.flatMap((l) => l.names || []))];
   const desc = e.links.map((l) => l.desc).filter(Boolean);
@@ -1857,8 +2018,9 @@ function edgePanel(e) {
 // ======================= search (command palette) =======================
 // modelmap: a module is also found by its class (m.cls) and its simple arguments as name=value (dim=192); its row shows the class
 const argWords = (m) => Object.entries(m?.args || {}).filter(([, r]) => ['number', 'string', 'boolean'].includes(typeof r?.v)).map(([k, r]) => (/^\d+$/.test(k) ? String(r.v) : `${k}=${r.v}`)).join(' ');
+// modelmap: the virtual nodes of a flow (in, out, ops) are not modules, so search leaves them out
 const index = [
-  ...G.nodes.map((n) => ({ id: 'n:' + n.id, name: n.label, desc: n.summary || '', path: n.id, kind: n.kind, cls: n.m?.cls || '', args: argWords(n.m), w: 4 })),
+  ...G.nodes.filter((n) => !n.virtual).map((n) => ({ id: 'n:' + n.id, name: n.label, desc: n.summary || '', path: n.id, kind: n.kind, cls: n.m?.cls || '', args: argWords(n.m), w: 4 })),
   ...G.files.map((f) => ({ id: 'f:' + f.p, name: f.name, desc: f.d || '', path: f.p, kind: 'file', w: 3 })),
   ...routes.map((r, i) => ({ id: 'r:' + i, name: r.name, desc: r.d || '', path: `${r.m} ${r.p}`, kind: 'route', w: 3 })),
   ...G.files.flatMap((f) => (f.s || []).map((s, i) => ({ id: `s:${f.p}#${i}`, name: s[0], desc: s[4] || '', path: f.p, kind: symIcon(s[1]), w: 1 }))).filter((x) => parentOf.has(x.id)),
@@ -2134,7 +2296,7 @@ function sheetShell(question, body) {
     ${askState.last && state.container !== 'q:answer' ? '<button class="btn soft" data-act="board">Show answer board</button>' : ''}
     ${state.container === 'q:answer' ? '<button class="btn soft" data-act="map">Back to map</button>' : ''}
     <button class="btn icon" data-act="close" title="Close">${iconI('x')}</button></div><div class="sb">${body}</div>`;
-  sheet.querySelector('[data-act="close"]').onclick = () => { if (askState.busy) cancelAsk(); sheet.hidden = true; if (state.container === 'q:answer') go('root'); else fit(true); };
+  sheet.querySelector('[data-act="close"]').onclick = () => { if (askState.busy) cancelAsk(); sheet.hidden = true; if (state.container === 'q:answer') go('root'); else refit(true); }; // modelmap: refit
   sheet.querySelector('[data-act="map"]')?.addEventListener('click', () => go('root'));
   sheet.querySelector('[data-act="board"]')?.addEventListener('click', () => go('q:answer'));
   sheet.querySelectorAll('[data-ref]').forEach((r) => r.onclick = () => {
@@ -2282,7 +2444,7 @@ if (!EXPORTED) loadCustomFlows();
 
 // ======================= boot =======================
 $('#proj-name').textContent = revealHidden(G.project.name);
-// modelmap: a model map has no connections to filter yet, so the filter button goes (it also holds "Show technical detail")
+// modelmap: a model map without flow links (tensor edges) has nothing to filter, so the filter button goes (it also holds "Show technical detail")
 if (!G.links.length) $('#filters-btn').parentElement.style.display = 'none';
 if (EXPORTED) {
   document.body.classList.add('exported');
@@ -2368,7 +2530,7 @@ phoneQuery.addEventListener('change', sheetRole); sheetRole();
 const setPanel = (on) => {
   const was = !document.body.classList.contains('no-panel'); document.body.classList.toggle('no-panel', !on); $('#btn-panel').setAttribute('aria-expanded', String(on));
   if (!isPhone()) store.set('panel', on);
-  if (was !== on && !isPhone()) fit(true);
+  if (was !== on && !isPhone()) refit(true); // modelmap: a flow view keeps its scale (refit)
   if (was !== on && isPhone()) {
     if (on && keyboardUser) { sheetReturn = document.activeElement; panel.focus({ preventScroll: true }); }
     else if (!on && sheetReturn) { if (panel.contains(document.activeElement) || document.activeElement === document.body) sheetReturn.focus?.({ preventScroll: true }); sheetReturn = null; }
@@ -2444,7 +2606,7 @@ window.Floorplan = Object.freeze({
   version: 1,
   graph: G, query: Q, state, agent: AGENT, exported: EXPORTED,
   // model helpers
-  info, chain, children: (id) => visibleKids(id), parentOf: (id) => parentOf.get(id), exists: (id) => Q.exists(id),
+  info, chain, children: (id) => visibleKids(id).filter((k) => !vnodeOf(k)), parentOf: (id) => parentOf.get(id), exists: (id) => Q.exists(id),
   files, nodes, routes, colorOf, iconKey,
   // html helpers
   h, hk, revealHidden, icon, iconI, fmt, plural, md,

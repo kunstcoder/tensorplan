@@ -3,12 +3,14 @@
 // modelmap/query.mjs (as a CLI that the Claude Code CLI or Codex calls). Plain script: no imports, no exports.
 // Item ids: n:<node id>. A node id is the module's instance path (blocks.0.attn); the model itself is n:root.
 // Every number these lookups print is worked out here, in integers, so an answer can copy it and never has to
-// do arithmetic of its own.
+// do arithmetic of its own. The virtual nodes of a block flow (its in, out and ops; virtual: true) are not modules:
+// find, overview, the children of show and the params breakdowns never list them. flow <id> lists a block's tensor
+// edges, whose shapes are estimates.
 
 function createGraphQuery(G) {
   const nodes = new Map(G.nodes.map((n) => [n.id, n]));
   const kidsOf = new Map();
-  for (const n of G.nodes) if (n.parent != null) { if (!kidsOf.has(n.parent)) kidsOf.set(n.parent, []); kidsOf.get(n.parent).push(n.id); }
+  for (const n of G.nodes) if (n.parent != null && !n.virtual) { if (!kidsOf.has(n.parent)) kidsOf.set(n.parent, []); kidsOf.get(n.parent).push(n.id); }
   // a member of a folded run (blocks.3) is shown by the run's card (blocks.0)
   const foldOf = new Map();
   for (const n of G.nodes) for (const p of n.m?.fold?.members || []) if (p !== n.id && !nodes.has(p)) foldOf.set(String(p), n.id);
@@ -82,6 +84,7 @@ function createGraphQuery(G) {
     const kinds = new Set(G.nodes.map((n) => n.kind));
     const scored = [];
     for (const n of G.nodes) {
+      if (n.virtual) continue; // the in, out and ops of a flow are not modules
       if (kind && kinds.has(kind) && n.kind !== kind) continue;
       const m = M(n);
       const label = String(n.label || '').toLowerCase(), cls = String(m.cls || '').toLowerCase(), title = String(n.title || '').toLowerCase();
@@ -134,6 +137,7 @@ function createGraphQuery(G) {
     if (m.notes) res.notes = m.notes;
     if (m.weights) res.weights = m.weights;
     if (m.check) res.weightsCheck = m.check;
+    if (flowLinks.has(n.id)) res.flow = { edges: flowLinks.get(n.id).length, note: 'the data flow of forward(): run flow ' + 'n:' + n.id + '; its shapes are estimates' };
     const kids = childList(n);
     res.children = kids.slice(0, 30);
     if (kids.length > 30) res.moreChildren = kids.length - 30;
@@ -184,6 +188,34 @@ function createGraphQuery(G) {
     return res;
   }
 
+  // the data flow inside a block: links of kind "tensor" (descriptions' flows block, lib/flow.mjs), by the block
+  const flowLinks = new Map();
+  for (const l of G.links || []) {
+    if (!l || l.k !== 'tensor') continue;
+    const a = nodes.get(String(l.a).replace(/^n:/, ''));
+    if (a && a.parent != null) { if (!flowLinks.has(a.parent)) flowLinks.set(a.parent, []); flowLinks.get(a.parent).push(l); }
+  }
+  /** An endpoint: a module's name and id, or "in", "out" or an op ("+ (add1)"), which are not modules and have no id. */
+  const flowEnd = (id) => {
+    const n = nodes.get(String(id).replace(/^n:/, ''));
+    if (!n) return { name: String(id) };
+    if (n.virtual) return { name: n.op ? n.label + ' (' + n.op.id + ')' : String(n.label) };
+    return { name: String(n.label), id: 'n:' + n.id };
+  };
+  /** The tensor edges of a block's forward(), in the order Claude wrote them. Every shape is an estimate. */
+  function flow(id) {
+    const n = need(id), ls = flowLinks.get(n.id) || [];
+    return {
+      id: 'n:' + n.id, name: nameOf(n), class: M(n).cls || '', ...resolved(id, n), count: ls.length,
+      edges: ls.map((l) => {
+        const a = flowEnd(l.a), b = flowEnd(l.b);
+        return { from: a.name, to: b.name, ...(a.id ? { fromId: a.id } : {}), ...(b.id ? { toId: b.id } : {}), shape: { v: l.shape && typeof l.shape.v === 'string' ? l.shape.v : null, src: (l.shape && l.shape.src) || 'estimate' },
+          ...(l.skip ? { skip: true } : {}), ...(l.at ? { at: l.at } : {}), ...(l.d ? { d: l.d } : {}) };
+      }),
+      note: ls.length ? 'shapes are estimates: say so when you quote them' : 'no flow was written for this module (the "flows" block of descriptions/*.json)',
+    };
+  }
+
   function contract() {
     if (G.contract && typeof G.contract === 'object') return { available: true, ...G.contract };
     return { available: false, reason: 'The scan found no forward() method on the root model, so the map has no input and output contract.' };
@@ -206,7 +238,7 @@ function createGraphQuery(G) {
     const kids = childList(root);
     const P = rec(M(root).params);
     for (const k of kids) k.share = share(k.params, P.v);
-    const unknown = G.nodes.filter((n) => M(n).why || (M(n).params && M(n).params.lowerBound && !(kidsOf.get(n.id) || []).length)).slice(0, 12).map((n) => ({ id: 'n:' + n.id, class: M(n).cls || '', why: String(M(n).why || M(n).params.why || '') }));
+    const unknown = G.nodes.filter((n) => !n.virtual).filter((n) => M(n).why || (M(n).params && M(n).params.lowerBound && !(kidsOf.get(n.id) || []).length)).slice(0, 12).map((n) => ({ id: 'n:' + n.id, class: M(n).cls || '', why: String(M(n).why || M(n).params.why || '') }));
     const c = contract();
     return {
       project: G.project?.name || '', summary: G.project?.summary || '',
@@ -220,7 +252,7 @@ function createGraphQuery(G) {
     };
   }
 
-  return { find, show, params, contract, path, overview, exists, brief };
+  return { find, show, params, contract, flow, path, overview, exists, brief };
 }
 
 // What an answer looks like, for both engines (JSON Schema).
@@ -262,12 +294,13 @@ function floorplanFlowInstructions(G, engine) {
 function floorplanAskInstructions(G, engine) {
   const q = '\x60node modelmap/query.mjs';
   const tools = engine === 'cli'
-    ? 'Look things up from the shell; each prints JSON: ' + q + ' overview\x60, ' + q + ' find "<words>"\x60 (name, class, argument, path), ' + q + ' show <id>\x60 (class, arguments, parameters, children, notes), ' + q + ' params <id> [--top N]\x60 (exact count, per-child breakdown with shares, folded copies, shared weights), ' + q + ' contract\x60 (forward() inputs, outputs, shape symbols). You may Read or Grep the repo\'s source files to explain how something works.'
+    ? 'Look things up from the shell; each prints JSON: ' + q + ' overview\x60, ' + q + ' find "<words>"\x60 (name, class, argument, path), ' + q + ' show <id>\x60 (class, arguments, parameters, children, notes), ' + q + ' params <id> [--top N]\x60 (exact count, per-child breakdown with shares, folded copies, shared weights), ' + q + ' contract\x60 (forward() inputs, outputs, shape symbols), ' + q + ' flow <id>\x60 (the tensor edges inside a block, with estimated shapes). You may Read or Grep the repo\'s source files to explain how something works.'
     : 'Look things up with the tools find_items and get_item (a module\'s class, arguments, parameter count and children). You cannot read source files; say so when a question needs the code.';
   return [
     'You answer questions about the model "' + (G.project?.name || '') + '" for a developer exploring an interactive map of its module tree. Map items are modules, ids n:<instance path>; the model itself is n:root.',
     tools,
     'Numbers: copy every number (parameters, bytes, shares, copies, shapes, dimensions) exactly as a lookup printed it (the shown field). Do no arithmetic yourself: no sums, products or percentages; when you need a total or a share, run the lookup that prints it. Never state a number that no lookup printed. A count with lowerBound is written with ≥ and its reason (why). Name the source tag (code, config, weights, estimate) when it matters.',
+    'A shape taken from a flow (flow <id>, a tensor edge) is an estimate Claude wrote from reading forward(): when you quote it, call it an estimate (추정).',
     'What-if questions ("what if dim were 256?"): say that the map does not calculate what-if values yet. Do not invent a formula or a number.',
     'Use a few lookups, not dozens. Then reply with JSON only: {"title", "answer", "items", "steps", "followups"}.',
     '- answer: Markdown in Korean, with the English term next to the Korean word, e.g. 잔차 연결(residual connection); at most ~180 words. Refer to map items inline as [[id]], with ids a lookup printed.',

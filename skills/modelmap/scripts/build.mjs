@@ -56,8 +56,9 @@ const descriptions = loadDescriptions(descDir);
 const gitOut = (a) => git(root, a) || null; // lib/common.mjs: an argument list, never a shell
 const head = gitOut(['rev-parse', 'HEAD']);
 const repos = [head ? { path: '.', name: path.basename(root), branch: gitOut(['rev-parse', '--abbrev-ref', 'HEAD']), head } : { path: '.', name: path.basename(root) }];
-const contractWarnings = [];
-const graph = toGraph(scan, { descriptions, root, repos, warnings: contractWarnings });
+// what the build dropped from the descriptions' contract and flows blocks, one NOTE line each
+const dropWarnings = [];
+const graph = toGraph(scan, { descriptions, root, repos, warnings: dropWarnings });
 // the map folder ignores itself: nothing in it belongs in the repo's history
 fs.writeFileSync(path.join(outDir, '.gitignore'), '*\n');
 fs.writeFileSync(path.join(outDir, 'graph.json'), JSON.stringify(graph));
@@ -121,7 +122,8 @@ const report = [
     + ', ' + [...graph.contract.inputs, ...graph.contract.output.keys].filter((x) => x.shape?.v).length + ' shapes known'
     + (graph.contract.dims.length ? '; dims ' + graph.contract.dims.map((d) => d.sym + '=' + d.value).join(' ') : '')] : []),
   ...descriptions.warnings.map((w) => 'NOTE    ' + w),
-  ...contractWarnings.map((w) => 'NOTE    ' + w),
+  ...(graph.meta.counts.flowClasses ? ['FLOWS   ' + graph.meta.counts.flowClasses + ' class(es), ' + graph.meta.counts.linkCount + ' tensor edges on the map; every shape is an estimate (Claude read forward(), nothing ran)'] : []),
+  ...dropWarnings.map((w) => 'NOTE    ' + w),
   'GIT     ' + shownPath(outDir) + '/ is kept out of git (it ignores itself)',
   '',
   '✓ wrote ' + path.join(outDir, 'index.html') + ' (' + fmtNum(Math.round(html.length / 1024)) + ' KB) and graph.json',

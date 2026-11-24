@@ -4,7 +4,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { foldTree, pattern } from './fold.mjs';
-import { buildContract, mergeEstimates } from './contract.mjs';
+import { buildContract, mergeEstimates, buildDims } from './contract.mjs';
+import { mergeFlows, checkFlows, classIndex, flowGraph, FLOW_CAPS } from './flow.mjs';
 
 export const GRAPH_SCHEMA = 'modelmap/graph@1';
 export const MAX_ARGS = 12;      // arguments kept per module
@@ -156,15 +157,17 @@ function capStrings(v, depth = 0) {
   return out;
 }
 
-const emptyDescriptions = () => ({ classes: Object.create(null), modules: Object.create(null), contract: null });
+const emptyDescriptions = () => ({ classes: Object.create(null), modules: Object.create(null), contract: null, flows: null });
 
 /**
  * The graph for a scan. descriptions: the merged result of loadDescriptions(). name: the repo's name for the map's
  * meta.rootName (default scan.meta.root). root: the repo's absolute path, for the viewer's editor links (meta.root).
  * repos: meta.repos, [{ path, name, branch?, head? }] (build.mjs reads them from git). warnings: an array that
- * gets a line for each estimate of the descriptions' "contract" block that was dropped (lib/contract.mjs).
+ * gets a line for each estimate of the descriptions' "contract" block that was dropped (lib/contract.mjs), and for
+ * each part of the "flows" block that was dropped (lib/flow.mjs). flowIndex: classIndex(scan) when the caller has it
+ * (default: made here, reading forward() as text from root when root is given).
  */
-export function toGraph(scan, { descriptions, name, root, repos, warnings } = {}) {
+export function toGraph(scan, { descriptions, name, root, repos, warnings, flowIndex } = {}) {
   if (!scan || !isObj(scan.root)) throw new Error('the scan has no root module');
   const D = descriptions && isObj(descriptions) ? descriptions : emptyDescriptions();
   const classes = isObj(D.classes) ? D.classes : {}, modules = isObj(D.modules) ? D.modules : {};
@@ -229,6 +232,18 @@ export function toGraph(scan, { descriptions, name, root, repos, warnings } = {}
   const rootNode = nodes[0];
   // the input and output contract of the root's forward(); absent when the scan found no forward
   const contract = buildContract(scan, D, Array.isArray(warnings) ? warnings : []);
+  // the block flow diagram: the "flows" block, checked against the scan, becomes tensor links between the cards of
+  // every instance of a class, and virtual nodes (in, out, ops) that are not modules (lib/flow.mjs)
+  let links = [], flowClasses = 0;
+  const flowNotes = [];
+  if (isObj(D.flows) && Object.keys(D.flows).length) {
+    const chk = checkFlows(D.flows, { index: flowIndex || classIndex(scan, { root: root || null }), symbols: buildDims(scan).map((d) => d.sym) });
+    const fg = flowGraph(nodes, chk.flows);
+    nodes.push(...fg.nodes);
+    links = fg.links; flowClasses = fg.flowClasses;
+    flowNotes.push(...chk.errors, ...chk.warnings, ...fg.warnings);
+    if (Array.isArray(warnings)) warnings.push(...flowNotes);
+  }
   return {
     schema: GRAPH_SCHEMA,
     meta: {
@@ -245,11 +260,14 @@ export function toGraph(scan, { descriptions, name, root, repos, warnings } = {}
         params: rootNode.m.params.v,
         unknownParts: (res.unknown || 0) + (res.external || 0) + (res.incomplete || 0),
         contractInputs: contract ? contract.inputs.length : 0,
+        flowClasses,
+        linkCount: links.length,
       },
+      ...(flowNotes.length ? { flowWarnings: flowNotes.slice(0, FLOW_CAPS.warnings).map((s) => (s.length > 300 ? s.slice(0, 299) + '…' : s)) } : {}),
     },
     project: { name: rootNode.label, summary: rootNode.summary },
     nodes,
-    files: [], routes: [], links: [], flows: [], tour: [],
+    files: [], routes: [], links, flows: [], tour: [],
     ...(contract ? { contract } : {}),
   };
 }
@@ -257,7 +275,7 @@ export function toGraph(scan, { descriptions, name, root, repos, warnings } = {}
 const strField = (o, k, max) => (has(o, k) && typeof o[k] === 'string' ? o[k].slice(0, max) : undefined);
 
 /**
- * Read <dir>/*.json in file-name order and merge them: { classes, modules, files, warnings }. A later file wins,
+ * Read <dir>/*.json in file-name order and merge them: { classes, modules, contract, flows, files, warnings }. A later file wins,
  * field by field. A file that is not JSON or has the wrong shape is skipped with a warning; this never throws.
  */
 export function loadDescriptions(dir) {
@@ -288,6 +306,11 @@ export function loadDescriptions(dir) {
     if (data.contract !== undefined) {
       if (isObj(data.contract)) out.contract = mergeEstimates(out.contract, data.contract);
       else out.warnings.push('descriptions/' + n + ': "contract" skipped: expected { "inputs": {...}, "output": {...} }');
+    }
+    // the block flow diagram; checked against the scan by toGraph() (lib/flow.mjs)
+    if (data.flows !== undefined) {
+      if (isObj(data.flows)) out.flows = mergeFlows(out.flows, data.flows);
+      else out.warnings.push('descriptions/' + n + ': "flows" skipped: expected { "<ClassName>": { "ops": [...], "edges": [...] } }');
     }
     out.files.push(n);
   }

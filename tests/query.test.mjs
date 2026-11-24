@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hasPython, fixture, tmpDir } from './helpers.mjs';
+import { hasPython, fixture, tmpDir, node, script } from './helpers.mjs';
+import { BLOCK_FLOW, HEAD_FLOW } from './helpers-flow.mjs';
 import { hostileRepo } from './helpers-build.mjs';
 import { buildMap, query } from './helpers-ask.mjs';
 
@@ -208,4 +209,41 @@ test('hostile class and argument text comes back as JSON data, never as code or 
   assert.ok(!fs.existsSync(marker));
   // one JSON document and nothing else on stdout
   for (const r of [s, f, bad]) assert.doesNotThrow(() => JSON.parse(r.stdout));
+});
+
+// ---------- block flows (tensor links; hand-written example flows on tests/fixtures/flow) ----------
+test('flow <id>: the tensor edges of a block with estimated shapes and a note; show counts them; find, overview, show children and params never list the virtual in/out/op nodes', { skip }, () => {
+  const { root, map } = buildMap(fixture('flow'));
+  const before = query(map, 'overview').json;
+  fs.writeFileSync(path.join(map, 'descriptions', 'flows.json'), JSON.stringify({ flows: { Block: BLOCK_FLOW(), Head: HEAD_FLOW() } }));
+  const b = node(script('build.mjs'), [root, '--out', map]);
+  assert.equal(b.status, 0, b.stderr);
+  assert.match(b.stdout, /FLOWS {3}2 class\(es\), 39 tensor edges on the map; every shape is an estimate/);
+  const f = query(map, 'flow', 'n:blocks.0');
+  assert.equal(f.status, 0, f.stdout);
+  assert.equal(f.json.count, 9);
+  assert.equal(f.json.note, 'shapes are estimates: say so when you quote them');
+  assert.deepEqual(f.json.edges[0], { from: 'in', to: 'norm1', toId: 'n:blocks.0.norm1', shape: { v: '[B, N, D]', src: 'estimate' }, at: 'model.py:21' });
+  assert.deepEqual(f.json.edges[3], { from: 'in', to: '+ (add1)', shape: { v: '[B, N, D]', src: 'estimate' }, skip: true, d: 'residual: x is added as it is' });
+  assert.deepEqual(f.json.edges[7].shape, { v: null, src: 'estimate' }, 'an edge written without a shape');
+  // a folded member finds its card; a module without a flow says so; the child named out keeps its id
+  assert.deepEqual([query(map, 'flow', 'blocks.2').json.id, query(map, 'flow', 'blocks.2').json.count], ['n:blocks.0', 9]);
+  assert.deepEqual([query(map, 'flow', 'n:root').json.count, /no flow was written/.test(query(map, 'flow', 'n:root').json.note)], [0, true]);
+  assert.deepEqual(query(map, 'flow', 'n:head').json.edges.map((e) => [e.from, e.to, e.fromId || '', e.toId || '']), [['in', 'proj', '', 'n:head.proj'], ['proj', 'out', 'n:head.proj', 'n:head.out'], ['out', 'out', 'n:head.out', '']]);
+  assert.equal(query(map, 'flow').status, 1);
+  const s = query(map, 'show', 'n:mixed.1').json;
+  assert.equal(s.flow.edges, 9);
+  assert.deepEqual(s.children.map((c) => c.id), ['n:mixed.1.norm1', 'n:mixed.1.attn', 'n:mixed.1.norm2', 'n:mixed.1.mlp']);
+  // the virtual nodes never come back as modules
+  const looked = [query(map, 'find', 'in out add').json, query(map, 'find', '+').json, query(map, 'find', 'in', '--kind', 'io').json, query(map, 'overview').json,
+    query(map, 'params', 'n:mixed.1').json, query(map, 'params', 'n:head').json, query(map, 'params', 'n:blocks').json, query(map, 'show', 'n:head').json, query(map, 'show', 'n:blocks.0').json];
+  assert.ok(!JSON.stringify(looked).includes('#'), 'no virtual node id in find, overview, show or params');
+  const o = query(map, 'overview').json;
+  assert.deepEqual([o.counts.modules, o.counts.flowClasses, o.counts.linkCount], [before.counts.modules, 2, 39]);
+  assert.deepEqual(o.parts, before.parts);
+  assert.equal(query(map, 'params', 'n:mixed.1').json.breakdown.addsUp, true);
+  // the answer instructions: the lookup is listed, and a shape from a flow is called an estimate
+  const { floorplanAskInstructions, G } = core(map);
+  assert.match(floorplanAskInstructions(G, 'cli'), /query\.mjs flow <id>\x60 \(the tensor edges inside a block, with estimated shapes\)/);
+  assert.match(floorplanAskInstructions(G, 'cli'), /A shape taken from a flow .* call it an estimate \(추정\)\./);
 });

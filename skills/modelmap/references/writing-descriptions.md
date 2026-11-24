@@ -78,6 +78,55 @@ def forward(self, x: torch.Tensor, attn_kwargs: dict[str, Any] | None = None) ->
 - "Post-LN 구조이다." → 코드와 반대다. 코드를 읽고 쓴다.
 - "RoPE 를 적용한다." → 이 클래스의 코드는 attn_kwargs 를 넘길 뿐이다. 실제로 RoPE 를 쓰는지는 이 코드만으로는 확인 못 함.
 
+## 흐름도(flows) 쓰기
+
+`flows` 블록(선택, optional)은 블록 안에서 데이터가 움직이는 순서를 적는다. 지도는 그 클래스의 카드를 열었을 때 하위 모듈 카드들을 화살표로 잇고, 화살표마다 shape 라벨을 붙인다. 형식은 [schema.md](schema.md) 의 "The flows block" 이다. 워크시트의 "Flows" 절에 후보 클래스(forward() 와 직접 하위 모듈 두 개 이상)와 그 하위 모듈 이름이 있다.
+
+- **코드가 보여 주는 엣지(edge)만** 쓴다. forward() 를 한 줄씩 따라가며 "이 텐서가 어디서 와서 어디로 가는가"만 적는다. 분기나 조건문이 많아 경로가 분명하지 않은 클래스는 쓰지 않는다.
+- 끝점(endpoint)은 직접 하위 모듈의 속성 이름(`norm1`, `attn`), `"in"`(forward 가 받는 입력), `"out"`(forward 가 돌려주는 값), 또는 `ops` 에 선언한 연산 id 다. 손자 모듈(`attn.qkv`)은 끝점이 될 수 없다. 그 흐름은 `attn` 의 클래스에 따로 쓴다.
+- 모듈이 아닌 연산(operation)은 `ops` 에 둔다: 더하기(add), 곱하기(mul), 이어 붙이기(concat), 그 밖(other, label 에 이름). 잔차 더하기(residual add)는 add op 하나와, 더해지는 입력에서 그 op 로 가는 `"skip": true` 엣지로 쓴다.
+- **shape 는 추정(estimate)이다.** 코드나 docstring 이 분명히 말할 때만 쓰고, 아니면 `shape` 를 뺀다. 기호는 차원 표(dims table)의 기호와 `B`, `N`(아래첨자 `N_q`), 정수만 쓴다. 차원 표나 코드에 없는 숫자는 쓰지 않는다. 지도는 모든 shape 에 점선 테두리와 estimate 표시를 붙인다.
+- `at` 은 그 데이터가 움직이는 forward() 안의 줄(`"file:line"`)이다. `d` 는 짧은 메모(200자 이하)다. 둘 다 선택이다. 짧게 쓴다.
+
+### 예: AB-UPT 의 TransformerBlock (사전 정규화, pre-norm)
+
+`src/modules/blocks/transformer_block.py` 의 forward():
+
+```python
+x = x + self.attn(self.norm1(x), **(attn_kwargs or {}))   # 35행
+x = x + self.mlp(self.norm2(x))                           # 36행
+return x                                                  # 37행
+```
+
+docstring 이 입력을 `(batch_size, seqlen/num_tokens, dim)` 이라고 말하므로 `[B, N, D]` 를 쓸 수 있고, 잔차 더하기는 입력과 출력 shape 가 같아야 하므로 모든 엣지가 `[B, N, D]` 다. 지도에는 `in → norm1 → attn → + → norm2 → mlp → + → out` 이 그려지고, `in → +`, `+ → +` 가 점선(skip)이다.
+
+```json
+{
+  "flows": {
+    "TransformerBlock": {
+      "ops": [{ "id": "add1", "op": "add" }, { "id": "add2", "op": "add" }],
+      "edges": [
+        { "from": "in", "to": "norm1", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:35" },
+        { "from": "norm1", "to": "attn", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:35" },
+        { "from": "attn", "to": "add1", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:35" },
+        { "from": "in", "to": "add1", "skip": true, "shape": "[B, N, D]", "d": "잔차 연결(residual): x 를 그대로 더한다" },
+        { "from": "add1", "to": "norm2", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:36" },
+        { "from": "norm2", "to": "mlp", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:36" },
+        { "from": "mlp", "to": "add2", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:36" },
+        { "from": "add1", "to": "add2", "skip": true, "shape": "[B, N, D]", "d": "잔차 연결(residual)" },
+        { "from": "add2", "to": "out", "shape": "[B, N, D]", "at": "src/modules/blocks/transformer_block.py:37" }
+      ]
+    }
+  }
+}
+```
+
+피할 것:
+
+- `attn_kwargs` 를 엣지로 그리기. 텐서의 흐름이 아니라 설정값이다.
+- docstring 도 코드도 말하지 않는 shape(`[B, 1024, D]` 같은 숫자)를 쓰기. 모르면 `shape` 를 뺀다.
+- `attn` 안의 `qkv`, `proj` 를 TransformerBlock 의 끝점으로 쓰기. 직접 하위 모듈만 된다.
+
 ## 확인
 
 쓴 다음 `node <skill>/scripts/describe.mjs <repo> --check` 를 돌린다. 형식 오류(✗)를 모두 고치고, 설명이 없는 클래스 목록이 비도록 채운다. 스캔에 없는 클래스나 경로는 경고(!)로 나온다: 오타인지 본다.

@@ -7,6 +7,7 @@
 //        node modelmap/query.mjs show <id>
 //        node modelmap/query.mjs params <id> [--top 10]
 //        node modelmap/query.mjs contract
+//        node modelmap/query.mjs flow <id>      (the tensor edges inside a block; every shape is an estimate)
 //        node modelmap/query.mjs path <fromId> <toId>
 // Ids look like n:root, n:blocks, n:blocks.0.attn. Every output is JSON; an error is {"error": "..."} with exit code 1.
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const COMMANDS = ['overview', 'find "<words>" [--kind <kind>] [--limit 15]', 'show <id>', 'params <id> [--top 10]', 'contract', 'path <fromId> <toId>'];
+const COMMANDS = ['overview', 'find "<words>" [--kind <kind>] [--limit 15]', 'show <id>', 'params <id> [--top 10]', 'contract', 'flow <id>', 'path <fromId> <toId>'];
 const argv = process.argv.slice(2);
 const flag = (name) => { const i = argv.indexOf('--' + name); if (i < 0) return undefined; const v = argv[i + 1]; argv.splice(i, 2); return v; };
 const kind = flag('kind'), limit = flag('limit'), top = flag('top');
@@ -30,6 +31,7 @@ try {
   else if (cmd === 'show') { needId(1); out = q.show(rest[0]); }
   else if (cmd === 'params') { needId(1); out = q.params(rest[0], top); }
   else if (cmd === 'contract') out = q.contract();
+  else if (cmd === 'flow') { needId(1); out = q.flow(rest[0]); }
   else if (cmd === 'path') { needId(2); out = q.path(rest[0], rest[1]); }
   else throw new Error('unknown command "' + cmd + '"; commands: ' + COMMANDS.join(' | '));
   console.log(JSON.stringify(out, null, 1));

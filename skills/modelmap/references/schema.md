@@ -85,7 +85,7 @@ Every `*.json` file in `modelmap/descriptions/` is read, in file-name order; for
 }
 ```
 
-- Only the keys `classes`, `modules` and `contract`; class entries only `name`, `d`, `details`; module entries only `d`. All values are strings.
+- Only the keys `classes`, `modules`, `contract` and `flows`; class entries only `name`, `d`, `details`; module entries only `d`. All values are strings.
 - Caps: `name` 80, `d` 400, `details` 2000 characters. No control characters; line breaks only in `details`.
 - The summary of a module is `modules[path].d`, else `classes[cls].d`, else `""`.
 - `describe.mjs --check` fails (exit 1) on invalid JSON or a wrong shape, warns about class names and paths the scan does not know, and lists repo classes without a description.
@@ -107,18 +107,38 @@ Every `*.json` file in `modelmap/descriptions/` is read, in file-name order; for
 - Files merge field by field; a later file wins. A shape from here is shown with the tag `estimate`; it fills an unknown shape and never replaces a shape from the docstring.
 - `describe.mjs --check` fails on a bad shape, an unknown key, a `d` over 400 characters or a control character, and warns about argument and key names that forward() does not have. `build.mjs` drops what does not pass and prints a NOTE for each.
 
+### The `flows` block (optional): how data moves through a block
+
+```json
+{
+  "flows": {
+    "<ClassName, or file.py:ClassName>": {
+      "ops": [ { "id": "add1", "op": "add", "label": "+" } ],
+      "edges": [ { "from": "norm1", "to": "attn", "shape": "[B, N, D]", "skip": false, "at": "src/block.py:35", "d": "<short note>" } ]
+    }
+  }
+}
+```
+
+- The key names the class whose `forward()` the flow describes; it applies to every instance of that class. `"file.py:ClassName"` picks one class when several share the name, and beats a plain `"ClassName"` key for that class. Files merge per class key, field by field (`ops`, `edges`); a later file wins.
+- An endpoint (`from`, `to`) is the attribute name of a DIRECT child module of the class (`"self.out"` names a child called `out`), `"in"` (what forward receives; never a `to`), `"out"` (what forward returns; never a `from`), or the `id` of an op.
+- An op is an operation that is not a module: `op` is `add`, `mul`, `concat` or `other`; `id` letters, digits and `_` (at most 40, not `in`, `out` or a child's name); `label` at most 20 characters (default `+`, `×`, `⧺`, or the op word).
+- `skip: true`: a residual or skip connection (drawn dashed and thinner). `shape`: optional, the grammar of the contract block (dims symbols, `B`, `N` with subscripts, integers, `...`); it is ALWAYS an estimate. `at`: optional `"file:line"`, at most 200 characters, a line inside the class's `forward()` (a line outside it is a warning). `d`: at most 200 characters, no control characters.
+- Caps: 40 classes, 12 ops and 60 edges per class; the graph keeps at most 5,000 flow links.
+- `describe.mjs --check` fails on an unknown endpoint, a bad shape, an op or edge of the wrong form, caps, lengths and control characters, and warns about a class the scan does not have and an `at` outside `forward()`. `build.mjs` drops what does not pass (a bad shape drops only the shape; the edge stays), prints a NOTE for each and keeps the first 10 in `meta.flowWarnings`.
+
 ## graph.json
 
 It keeps floorplan's top-level shape, so the page keeps working:
 
 ```
 { schema: "modelmap/graph@1",
-  meta: { generatedAt, rootName, root, agent: "claude", counts: { modules, params, unknownParts, contractInputs } },
+  meta: { generatedAt, rootName, root, agent: "claude", counts: { modules, params, unknownParts, contractInputs, flowClasses, linkCount }, flowWarnings? },
   project: { name, summary },
   nodes: GraphNode[], files: [], routes: [], links: [], flows: [], tour: [], contract? }
 ```
 
-`meta.counts.contractInputs`: the number of inputs of the root's forward(), 0 when there is no contract.
+`meta.counts.contractInputs`: the number of inputs of the root's forward(), 0 when there is no contract. `meta.counts.flowClasses`: the number of flows (class keys) that reached the graph; `meta.counts.linkCount`: the number of links. `meta.counts.modules` counts module instances only, never the virtual nodes of a flow. `meta.flowWarnings`: at most 10 lines on what the build dropped from the `flows` block; absent when nothing was dropped. A graph without flows has `links: []` and the same nodes as before flows existed.
 
 ### contract
 
@@ -151,7 +171,7 @@ Shape: { v: string|null, src: "doc"|"estimate", why? }
 | `id` | the instance path; the root's id is `"root"` |
 | `parent` | the parent's id, or null for the root |
 | `label` | the attribute name; for the root, the class name |
-| `kind` | `"model"`, `"block"`, `"attention"`, `"mlp"`, `"norm"`, `"embed"`, `"linear"`, `"other"`, `"external"` |
+| `kind` | `"model"`, `"block"`, `"attention"`, `"mlp"`, `"norm"`, `"embed"`, `"linear"`, `"other"`, `"external"`; for a virtual node `"io"` or `"op"` |
 | `summary`, `details` | from descriptions (see above) |
 
 ### ModuleRec (the `m` field)
@@ -172,3 +192,13 @@ Shape: { v: string|null, src: "doc"|"estimate", why? }
 | `fold` | equal siblings folded into one card: `{ n, members[], total? }` |
 | `letter`, `pattern` | siblings that differ: each gets a letter in order of first use, the container shows the pattern (`A B C B C B`) |
 | `alias`, `tied`, `notes`, `weights`, `check` | as in scan.json |
+
+### links: the tensor flow inside a block
+
+Every flow of the `flows` block becomes links between the nodes of every instance of its class in the graph. A folded run is one node (its first member), so its flow is drawn once; an unfolded run draws it for each instance.
+
+```
+{ a: "n:<node id>", b: "n:<node id>", k: "tensor", w: 1, shape: { v: "[B, N, D]" | null, src: "estimate" }, skip?: true, at?: "file:line", d?: string }
+```
+
+The endpoints `in`, `out` and the ops are VIRTUAL nodes, children of the block: `{ id: "<block id>#in" | "<block id>#out" | "<block id>#<op id>", parent: "<block id>", label: "in" | "out" | "<op label>", kind: "io" | "op", summary, details: "", tags: [], paths: [], packages: [], hosts: [], stats: { files: 0, loc: 0 }, virtual: true, io?: "in" | "out", op?: { id, op } }`, with no `m` field. They are not modules: `meta.counts.modules`, the parameter sums, folding, search, the tour and `query.mjs` (find, overview, the children of show, the params breakdowns) leave them out. `query.mjs flow <id>` lists a block's links; every shape there is an estimate.

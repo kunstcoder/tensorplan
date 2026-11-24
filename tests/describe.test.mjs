@@ -336,3 +336,61 @@ test('--check: the contract block: bad shapes, unknown keys, d over 400 characte
     assert.match(r.stdout, /0 error\(s\), 3 warning\(s\)/);
   } finally { t.done(); }
 });
+
+// ---------- the "flows" block (lib/flow.mjs) on tests/fixtures/flow; the flows are hand-written examples ----------
+test('worksheet: a Flows section for each repo class with a forward() and two or more direct children (key, forward() lines, children fenced, where its code is), the rules once, the flows block in the one JSON shape', { skip: skipNoPy }, () => {
+  const t = tmp();
+  try {
+    const { ws, r } = worksheetOf(path.join(repo, 'tests', 'fixtures', 'flow'), t);
+    assert.equal((ws.match(/^### \d+\. /gm) || []).length, 3, 'the class sections are unchanged');
+    assert.equal((ws.match(/^## Flows \(optional\): how data moves through forward\(\)$/gm) || []).length, 1);
+    for (const c of ['Block', 'Head', 'Net']) assert.match(ws, new RegExp('^### Flow · ' + c + '$', 'm'), c);
+    assert.match(ws, /- key \x60Block\x60, forward\(\) at model\.py:19-23; 6 instances share this flow/);
+    assert.match(ws, /잔차 더하기\(residual add\)는 add op 하나와/);
+    assert.match(ws, /shape 는 코드나 docstring 이 분명히 말할 때만 쓰고, 아니면 shape 를 뺀다/);
+    assert.match(ws, /Symbols for shapes: \x60D\x60, \x60L\x60, \x60B\x60, \x60N\x60/);
+    assert.match(ws, /"flows": \{\n {4}"<ClassName, or file\.py:ClassName when two classes share the name>": \{\n {6}"ops": \[/);
+    const lines = fences(ws);
+    const kid = lines.find((x) => x.l === 'norm1 = LayerNorm');
+    assert.ok(kid && kid.inside && /^REPOSITORY TEXT .*direct child modules of Block/.test(kid.label), 'the children are fenced repo text');
+    const code = lines.filter((x) => x.l.includes('x = x + self.attn(self.norm1(x))'));
+    assert.ok(code.some((x) => x.inside && /^REPOSITORY TEXT .*forward\(\) · model\.py:19-23$/.test(x.label)), 'forward() is fenced repo text in the Flows section');
+    assert.match(r.stdout, /"flows" is optional: how data moves through forward\(\) of 3 classes/);
+  } finally { t.done(); }
+});
+
+test('--check: the flows block: an unknown endpoint, a bad shape, a d over 200 characters, a control character and 13 ops fail; an unknown class and an "at" outside forward() warn; a good block passes', { skip: skipNoPy }, async () => {
+  const { BLOCK_FLOW, HEAD_FLOW, lineOf } = await import('./helpers-flow.mjs');
+  const t = tmp();
+  try {
+    const fx = path.join(repo, 'tests', 'fixtures', 'flow');
+    worksheetOf(fx, t);
+    fs.mkdirSync(path.join(t.dir, 'descriptions'));
+    const check = (doc) => { fs.writeFileSync(path.join(t.dir, 'descriptions', 'x.json'), JSON.stringify(doc)); return node(DESCRIBE, [fx, '--out', t.dir, '--check']); };
+    const good = check({ flows: { Block: BLOCK_FLOW(), Head: HEAD_FLOW() } });
+    assert.equal(good.status, 0, good.stdout);
+    assert.match(good.stdout, /2 flow entries: 0 error\(s\), 0 warning\(s\)/);
+    const warn = check({ flows: { Ghost: { edges: [{ from: 'in', to: 'out' }] }, Block: { edges: [{ from: 'in', to: 'norm1', at: 'model.py:' + lineOf('self.attn = nn.Linear') }] } } });
+    assert.equal(warn.status, 0, warn.stdout);
+    assert.match(warn.stdout, /! x\.json: flows\."Ghost": the scan has no repo class of this name/);
+    assert.match(warn.stdout, /! x\.json: flows\."Block"\.edges\[0\]\.at "model\.py:\d+" is not inside forward\(\) of "Block" \(model\.py:19-23\)/);
+    const fails = [
+      [{ Block: { edges: [{ from: 'in', to: 'nope' }] } }, /edges\[0\]\.to "nope": "Block" has no direct child module of this name/],
+      [{ Block: { edges: [{ from: 'in', to: 'norm1', shape: '[B, 7x]' }] } }, /edges\[0\]\.shape dropped: the shape uses "7x", which is not a symbol of the dimension table \(D, L, B, N\)/],
+      [{ Block: { edges: [{ from: 'in', to: 'norm1', d: 'z'.repeat(201) }] } }, /edges\[0\]\.d has 201 characters \(at most 200\)/],
+      [{ Block: { edges: [{ from: 'in', to: 'norm1', d: 'a\u0007b' }] } }, /edges\[0\]\.d holds a control character/],
+      [{ Block: { ops: Array.from({ length: 13 }, (_, i) => ({ id: 'o' + i, op: 'add' })), edges: [{ from: 'in', to: 'o0' }] } }, /\.ops has 13 entries \(at most 12\)/],
+      [{ Block: { edges: [{ from: 'in', to: 'norm1', extra: 1 }] } }, /edges\[0\]: unknown key "extra"/],
+      [[1, 2], /"flows" must be an object keyed by class name/],
+    ];
+    for (const [flows, re] of fails) {
+      const r = check({ flows });
+      assert.equal(r.status, 1, JSON.stringify(flows).slice(0, 80) + '\n' + r.stdout);
+      assert.match(r.stdout, re);
+    }
+    // without a scan the form is still checked (endpoints cannot be compared with the model)
+    fs.rmSync(path.join(t.dir, '.cache', 'scan.json'));
+    const noscan = check({ flows: { Block: { edges: [{ from: 'in', to: 'anything', shape: '[B, N, D]' }] } } });
+    assert.equal(noscan.status, 0, noscan.stdout);
+  } finally { t.done(); }
+});

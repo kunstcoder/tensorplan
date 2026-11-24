@@ -1,7 +1,7 @@
 // Derived from floorplan v0.11.0 (MIT): skills/floorplan/assets/ui/40-tour.js
 // "Start here": a calm one-minute tour on first open. Steps come from graph.tour when it has some; otherwise
-// modelmap builds them here from the graph: the whole model, its largest part, a repeated block, how to read a
-// number, and the weights check. The text is Korean with the English term in brackets; every number is read
+// modelmap builds them here from the graph: the whole model, its largest part, a repeated block, a block's data flow
+// (its shapes are estimates), how to read a number, and the weights check. The text is Korean with the English term in brackets; every number is read
 // from the graph, never written into the text.
 (() => {
   const SC = window.Floorplan;
@@ -95,6 +95,20 @@
       + ` 한 개(copy)에 파라미터 ${count(f.m.params)}개, ${fd.n}개 합계 ${total}개.`;
     return { ref: ref(f), kicker: '반복 블록', title: `${f.id} · ${f.m.cls} ×${fd.n}`, note };
   }
+  function tensorStep() {
+    // the block flows (graph links of kind "tensor"): one step at the first block that has one; numbers from the graph
+    const ls = (G.links || []).filter((l) => l && l.k === 'tensor');
+    if (!ls.length) return null;
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const first = byId.get(String(ls[0].a).replace(/^n:/, ''));
+    const c = first && byId.get(first.parent);
+    if (!c || !c.m) return null;
+    const mine = ls.filter((l) => byId.get(String(l.a).replace(/^n:/, ''))?.parent === c.id).length;
+    const classes = Number(G.meta?.counts?.flowClasses) || 0;
+    const note = `흐름도(flow): 이 블록을 열면 forward() 안에서 데이터가 움직이는 순서가 화살표(tensor flow edge) ${mine}개로 보인다. 지도 전체에는 클래스 ${classes}개의 흐름, 화살표 ${ls.length}개가 있다.`
+      + ' 화살표 옆 shape 는 Claude 가 forward() 를 읽고 쓴 추정(estimate)이다. 코드를 실행해서 잰 값이 아니다. 점선은 잔차 연결(residual)이다.';
+    return { ref: ref(c), kicker: '데이터 흐름', title: `${c.parent === null ? c.m.cls || c.label : c.id} · ${c.m.cls} flow`, note };
+  }
   function readingStep() {
     // the tags that the counts on this map carry, in the order code < config < weights < run
     const order = ['code', 'config', 'weights', 'run'];
@@ -122,7 +136,7 @@
   }
   function autoSteps() {
     if (!root) return [];
-    return [wholeStep, contractStep, largestStep, foldStep, readingStep, weightsStep].map((f) => f()).filter(Boolean);
+    return [wholeStep, contractStep, largestStep, foldStep, tensorStep, readingStep, weightsStep].map((f) => f()).filter(Boolean);
   }
   function buildSteps() {
     const own = (G.tour || []).filter((s) => s && s.ref && (s.ref === 'root' || SC.exists(s.ref))).map((s) => ({ ref: s.ref, title: s.title || SC.info(s.ref).name, note: s.note || SC.info(s.ref).desc || '', kicker: '' }));

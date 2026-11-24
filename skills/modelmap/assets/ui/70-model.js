@@ -1,7 +1,8 @@
 // modelmap: the model facts in the details panel. For a module: its parameters and where the number comes from,
 // its size, where its class is defined, its arguments, the members of a folded run, shared weights, the weights
 // file check and the scan's notes. For the overview: the model's total, and the input and output contract of
-// forward() with the dimension table (graph.contract, lib/contract.mjs). Talks to the viewer only through
+// forward() with the dimension table (graph.contract, lib/contract.mjs). A block with a data flow (graph links of kind
+// "tensor", lib/flow.mjs) lists its edges in a Flow section; every shape there is an estimate. Talks to the viewer only through
 // window.Floorplan. Every text here comes from the scanned repo, so all of it goes through SC.h (or SC.hk for ids).
 (() => {
   const SC = window.Floorplan;
@@ -43,6 +44,7 @@ table.mm-tbl td.mm-in { font-family: var(--mono); word-break: normal; overflow-w
 .mm-keys li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 table.mm-tbl .l.mm-sans { font-family: var(--sans); word-break: normal; overflow-wrap: anywhere; }
 .mm-legend { color: var(--text-3); font-size: 11.5px; line-height: 1.5; margin-top: 8px; }
+.mm-skip { font-family: var(--sans); font-size: 10.5px; color: var(--text-3); border-bottom: 1px dashed var(--text-4); margin-left: 4px; }
 `;
   document.head.appendChild(style);
 
@@ -119,6 +121,7 @@ table.mm-tbl .l.mm-sans { font-family: var(--sans); word-break: normal; overflow
     out.push('<div class="sec mm-sec">' + top + '</div>');
     // the root is the model: its panel also shows the input and output contract (other modules' panels do not)
     if (n.parent === null) out.push(contractSections(G.contract));
+    out.push(flowSection(n.id));
 
     // the weights file check
     if (m.check) {
@@ -180,9 +183,34 @@ table.mm-tbl .l.mm-sans { font-family: var(--sans); word-break: normal; overflow
 
   SC.addPanelSection('item', (id) => {
     const n = node(id);
+    if (n && n.virtual) return { html: flowSection(n.parent, n.id), top: true }; // the in, out or an op of a flow
     if (!n || !n.m) return null;
     return { html: moduleSections(n), top: true };
   });
+
+  // ---------- the data flow inside a block (links of kind "tensor"); every shape is an estimate ----------
+  const FLOW_MAX = 12;
+  const flowsIn = new Map(); // container id -> its tensor links
+  for (const l of Array.isArray(G.links) ? G.links : []) {
+    if (!l || l.k !== 'tensor') continue;
+    const a = node(l.a);
+    if (!a || a.parent === null || a.parent === undefined) continue;
+    if (!flowsIn.has(a.parent)) flowsIn.set(a.parent, []);
+    flowsIn.get(a.parent).push(l);
+  }
+  /** An endpoint as the list shows it: the child's name, "in", "out", or an op with its id ("+ add1"). */
+  const endName = (id) => { const n = node(id); return !n ? String(id) : n.virtual && n.op ? n.label + ' ' + n.op.id : String(n.label); };
+  const EST = '<span class="mm-tag estimate" title="estimate: Claude read forward(); nothing was run">estimate</span>';
+  /** The Flow section of a container (only the edges that touch one of its nodes, when only is given). */
+  function flowSection(container, only) {
+    const all = flowsIn.get(container) || [];
+    const ls = only ? all.filter((l) => l.a === 'n:' + only || l.b === 'n:' + only) : all;
+    if (!ls.length) return '';
+    const rows = ls.slice(0, FLOW_MAX).map((l) => '<li><span>' + h(endName(l.a)) + ' → ' + h(endName(l.b)) + (l.skip ? '<span class="mm-skip" title="skip connection (residual)">skip</span>' : '') + '</span>'
+      + (l.shape && l.shape.v ? '<span class="mm-shape"><span class="mm-mono">' + h(l.shape.v) + '</span>' + EST + '</span>' : '<span class="mm-unk" title="no shape written">?</span>') + '</li>').join('');
+    return sec('Flow', '<div class="mm-sub" style="margin-top:0">' + (only ? 'The tensor edges of this node' : 'How data moves through forward(), as Claude read it') + '. Every shape is an estimate: nothing was run.</div>'
+      + '<ul class="mm-list mm-keys">' + rows + (ls.length > FLOW_MAX ? '<li class="more">and ' + h(ls.length - FLOW_MAX) + ' more</li>' : '') + '</ul>', String(ls.length));
+  }
 
   // ---------- the input and output contract (graph.contract) ----------
   const MAX_KEYS_SHOWN = 10;
@@ -253,7 +281,11 @@ table.mm-tbl .l.mm-sans { font-family: var(--sans); word-break: normal; overflow
     }
     const cf = G.meta?.config;
     if (cf && typeof cf === 'object') body += '<span>Config</span><span><span class="mm-mono">' + h(cf.file) + (cf.key ? ' › ' + h(cf.key) : '') + '</span>' + (cf.arg ? ' fills <span class="mm-mono">' + h(cf.arg) + '</span> ' + tag('config') : '') + (cf.note ? '<br><span style="color:var(--warn-text)">' + h(cf.note) + '</span>' : '') + '</span>';
+    // the block flows (lib/flow.mjs): how many, and what the build dropped from the descriptions' flows block
+    if (c.flowClasses > 0) body += '<span>Flows</span><span>' + h(num(c.flowClasses)) + ' classes, ' + h(num(c.linkCount || 0)) + ' edges, all shapes estimated ' + EST + '</span>';
     body += '</div>';
+    const fw = Array.isArray(G.meta?.flowWarnings) ? G.meta.flowWarnings.slice(0, 10) : [];
+    if (fw.length) body += '<div class="mm-why">Left out of the flows:<ul class="mm-list" style="font-family:var(--sans)">' + fw.map((w) => '<li>' + h(w) + '</li>').join('') + '</ul></div>';
     return { html: '<div class="sec mm-sec"><h3>Parameters</h3>' + body + '</div>' + contractSections(G.contract), top: true };
   });
 })();

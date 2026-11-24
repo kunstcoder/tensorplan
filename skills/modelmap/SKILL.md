@@ -48,6 +48,7 @@ The repo is the argument if one was given, otherwise the current directory. In e
    - Write `modelmap/descriptions/classes.json` (any `*.json` name works; files merge in name order, a later file wins). The format is in [references/schema.md](references/schema.md).
    - Then check: `node ${CLAUDE_SKILL_DIR}/scripts/describe.mjs <repo> --check`. Fix every `✗` and run it again until it ends with 0 errors. It also lists the classes still without a description: describe them all.
    - More than about 40 classes: split the worksheet sections across subagents if you have them, each writing its own `descriptions/<part>.json`.
+   - Then the flows (optional): for the classes in the worksheet's Flows section whose data path the code makes clear, write the `flows` block (how data moves through `forward()`; see the flows section of writing-descriptions.md) and run `--check` again. Every shape there is shown as an estimate.
 
 3. **Build.**
    `node ${CLAUDE_SKILL_DIR}/scripts/build.mjs <repo>`
@@ -64,4 +65,4 @@ The repo is the argument if one was given, otherwise the current directory. In e
 - A sum that holds an unknown part shows `≥`; an unknown value shows `?` with its reason. A weight shared by two modules is counted once.
 - Paths in descriptions are instance paths as the worksheet prints them (`blocks.0.attn`); the root's path is `""`.
 - Don't hand-edit `graph.json` or `index.html`; every build rewrites them.
-- Planned, not built yet: the block flow diagram and the opt-in runtime trace (real shapes). The Ask bar of the page is being reworked; don't promise it.
+- A block with a flow shows its data path as arrows with shape labels; every shape is an estimate (Claude read the code, nothing ran). Planned, not built yet: the opt-in runtime trace (real shapes). The Ask bar of the page is being reworked; don't promise it.
