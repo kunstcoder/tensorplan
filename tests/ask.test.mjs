@@ -7,6 +7,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { hasPython, fixture } from './helpers.mjs';
 import { buildMap, startServe, calls, ask, request, alive, waitFor } from './helpers-ask.mjs';
 
@@ -23,6 +24,8 @@ const after1 = (argv, flag) => argv[argv.indexOf(flag) + 1];
 /** The values that follow a flag, up to the next --flag. */
 const valuesOf = (argv, flag) => { const i = argv.indexOf(flag); const out = []; for (let j = i + 1; j < argv.length && !argv[j].startsWith('--'); j++) out.push(argv[j]); return out; };
 const lastCall = () => calls(srv.log).at(-1);
+// the session id the real CLI hands out is a UUID; serve.mjs passes on nothing else
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test('the whole chain: question, fake CLI, node modelmap/query.mjs params, answer with the number the tool printed', { skip }, async () => {
   const r = await ask(srv, { question: '#tool n:blocks' });
@@ -62,7 +65,7 @@ test('the CLI is started read-only: -p, stream-json, exactly one allowed Bash co
     assert.doesNotMatch(a, /dangerously|bypassPermissions|acceptEdits/i);
     assert.doesNotMatch(a, /floorplan\//, 'no floorplan/ path is left: ' + a);
   }
-  assert.ok(!argv.includes('--permission-mode') && !argv.includes('--add-dir') && !argv.includes('--resume'));
+  assert.ok(!argv.includes('--permission-mode') && !argv.includes('--add-dir') && !argv.some((a) => a.startsWith('--resume')), 'a new conversation resumes nothing');
   // the answer schema
   const schema = JSON.parse(after1(argv, '--json-schema'));
   assert.deepEqual(schema.required, ['title', 'answer', 'items']);
@@ -83,9 +86,73 @@ test('the CLI is started read-only: -p, stream-json, exactly one allowed Bash co
 test('a follow-up with the session id resumes that session', { skip }, async () => {
   const first = await ask(srv, { question: 'first question' });
   const session = first.events.find((e) => e.event === 'answer').data.session;
+  assert.match(session, UUID, 'the fake CLI hands out a UUID, as the real one does');
   const second = await ask(srv, { question: 'and then?', session });
-  assert.equal(after1(lastCall().argv, '--resume'), session);
+  assert.deepEqual(lastCall().argv.filter((a) => a.startsWith('--resume')), ['--resume=' + session]);
   assert.equal(second.events.find((e) => e.event === 'answer').data.session, session);
+});
+
+test('only the user\'s own settings load: the repo is untrusted, so its project and local settings (hooks, permissions, env) never apply to Ask', { skip }, async () => {
+  await ask(srv, { question: 'what is this model?' });
+  const { argv } = lastCall();
+  assert.equal(argv.filter((a) => a === '--setting-sources').length, 1);
+  assert.equal(argv[argv.indexOf('--setting-sources') + 1], 'user');
+  assert.ok(!argv.some((a) => a.startsWith('--setting-sources=') || a === '--settings'), 'no second way to name settings');
+  // no other token names a settings source
+  assert.deepEqual(argv.filter((a) => /^[a-z,]+$/.test(a) && /(^|,)(project|local)(,|$)/.test(a)), []);
+});
+
+test('a follow-up passes a valid UUID as the one argument --resume=<id>, never as a separate --resume', { skip }, async () => {
+  for (const session of [crypto.randomUUID(), crypto.randomUUID().toUpperCase()]) {
+    const before = calls(srv.log).length;
+    const r = await ask(srv, { question: 'and then?', session });
+    assert.equal(calls(srv.log).length, before + 1, 'one CLI call');
+    const { argv } = lastCall();
+    assert.equal(argv.filter((a) => a === '--resume=' + session).length, 1);
+    assert.ok(!argv.includes('--resume'), 'no bare --resume token');
+    assert.deepEqual(argv.filter((a) => a.startsWith('--resume')), ['--resume=' + session], 'the only --resume argument');
+    assert.equal(r.events.find((e) => e.event === 'answer').data.session, session);
+  }
+});
+
+test('a session that is not a UUID is refused as bad_session: no CLI starts, and nothing of it reaches any argument', { skip }, async () => {
+  const uuid = crypto.randomUUID();
+  const hostile = [
+    '--dangerously-skip-permissions', '--settings={"hooks":{}}', '-r', 'abc', uuid + 'x', 'x' + uuid, '-' + uuid, ' ' + uuid, uuid + ' ', uuid + '\n',
+    uuid + '\n--dangerously-skip-permissions', '--resume=' + uuid, [uuid], { a: 1 }, 123, true, false, 0, [],
+  ];
+  for (const session of hostile) {
+    const label = JSON.stringify(session);
+    const before = calls(srv.log).length;
+    const r = await ask(srv, { question: 'and then?', session });
+    assert.equal(r.status, 200, label);
+    assert.deepEqual(r.events.map((e) => e.event), ['failure'], label + ' ' + JSON.stringify(r.events));
+    assert.equal(r.events[0].data.code, 'bad_session', label);
+    assert.match(r.events[0].data.message, /follow-up id is not valid/, label);
+    if (typeof session === 'string') assert.ok(!r.body.includes(session.trim()), 'the answer does not repeat it: ' + label);
+    await new Promise((res) => setTimeout(res, 50));
+    assert.equal(calls(srv.log).length, before, 'no CLI started for ' + label);
+    // the server still answers the next question
+    const next = await ask(srv, { question: 'is it still up?' });
+    assert.ok(next.events.some((e) => e.event === 'answer'), label);
+  }
+  // across every call the fake CLI ever got: no argument holds a hostile value, and every --resume is one canonical --resume=<uuid>
+  const all = calls(srv.log).flatMap((c) => c.argv);
+  for (const s of hostile.map((x) => typeof x === 'string' ? x : JSON.stringify(x))) {
+    assert.ok(!all.some((a) => a === s || a === '--resume=' + s || (s.length > 5 && a.includes(s))), 'argv holds ' + JSON.stringify(s));
+  }
+  assert.ok(!all.includes('--resume'));
+  for (const a of all.filter((x) => x.startsWith('--resume'))) assert.match(a, /^--resume=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+});
+
+test('no session, an empty string and null are all a new conversation: no --resume argument at all', { skip }, async () => {
+  for (const body of [{ question: 'fresh' }, { question: 'fresh', session: '' }, { question: 'fresh', session: null }]) {
+    const before = calls(srv.log).length;
+    const r = await ask(srv, body);
+    assert.equal(calls(srv.log).length, before + 1, JSON.stringify(body));
+    assert.ok(!lastCall().argv.some((a) => a.startsWith('--resume')), JSON.stringify(body));
+    assert.match(r.events.find((e) => e.event === 'answer').data.session, UUID, JSON.stringify(body));
+  }
 });
 
 test('/api/cancel stops a running CLI', { skip }, async () => {

@@ -268,9 +268,20 @@ function parseAnswer(ev) {
 }
 const failCode = (msg) => /not logged in|logged out|\/login|log ?in again|sign in|authenticat|unauthori[sz]ed|\b401\b/i.test(msg) ? 'not_logged_in'
   : /usage limit|rate limit|too many requests|\b429\b/i.test(msg) ? 'rate_limited' : 'cli_error';
+// The follow-up id comes from the page and goes into the CLI's arguments, so only the id the CLI itself gave out
+// (a UUID) is passed on, and as one `--resume=<id>` argument: `--resume` takes an optional value, so a bare id that
+// starts with `--` would be read as an option of its own.
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Claude Code: `claude -p` with read-only tools, answering in the schema; follow-ups resume its session
 function claudeRun(body, mode) {
+  const session = body.session;
+  if (session !== undefined && session !== null && session !== '' && !(typeof session === 'string' && SESSION_ID.test(session))) {
+    throw Object.assign(new Error('The follow-up id is not valid. Ask again without it.'), { code: 'bad_session' });
+  }
   const args = [...cli.args, '-p', '--output-format', 'stream-json', '--verbose',
+    // The repo is untrusted: its own .claude/settings.json and settings.local.json (hooks, permissions, env,
+    // apiKeyHelper) must not apply to Ask. Only the person's user settings load.
+    '--setting-sources', 'user',
     '--json-schema', JSON.stringify(mode.schema), '--append-system-prompt', mode.instructions,
     // Keep the agent out of the map's own generated files. modelmap/index.html inlines the layout engine and
     // fonts (about 2 MB on one line), and reading it can push a single question past the context limit.
@@ -280,7 +291,7 @@ function claudeRun(body, mode) {
     // "Prompt is too long" before the question is read. The empty config is one argument, so no shell quoting.
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--tools', 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node modelmap/query.mjs:*)', 'Read', 'Grep', 'Glob'];
-  if (body.session) args.push('--resume', String(body.session));
+  if (session) args.push(`--resume=${session}`);
   if (model) args.push('--model', model);
   return {
     args, input: String(body.question || '').slice(0, 4000),
@@ -363,7 +374,7 @@ function ask(req, res, body) {
   const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   if (!cli) { send('failure', { code: 'cli_missing', message: `${ENGINES[want].name} not found.` }); return res.end(); }
   runAgent(res, send, body)
-    .then((a) => send('answer', a), (e) => { if (e !== CLOSED) send('failure', { code: failCode(e.message), message: e.message }); })
+    .then((a) => send('answer', a), (e) => { if (e !== CLOSED) send('failure', { code: e.code === 'bad_session' ? 'bad_session' : failCode(e.message), message: e.message }); })
     .finally(() => res.end());
 }
 
@@ -450,8 +461,12 @@ server.on('listening', () => {
   port = server.address().port; // --port 0: the free port the system picked
   const u = `http://127.0.0.1:${port}`;
   try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString() }, null, 2));
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 });
+    // This file holds the token: only this user reads it. A file left by an earlier run keeps its old mode when it
+    // is written over, so remove it first, and set the mode again after the write.
+    try { fs.unlinkSync(stateFile); } catch {}
+    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+    fs.chmodSync(stateFile, 0o600);
   } catch {}
   const forget = () => { try { if (readState()?.pid === process.pid) fs.unlinkSync(stateFile); } catch {} };
   process.on('exit', forget);

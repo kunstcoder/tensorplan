@@ -12,6 +12,7 @@
 //   #crash       no result, "fake crash: something broke" on stderr, exit 3
 //   anything else: a short answer
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 const argv = process.argv.slice(2);
@@ -21,8 +22,9 @@ const log = (rec) => { if (process.env.FAKE_CLAUDE_LOG) fs.appendFileSync(proces
 let stdin = '';
 process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
-  const r = argv.indexOf('--resume');
-  const session = r >= 0 ? argv[r + 1] : 'fake-' + process.pid + '-' + Date.now().toString(36);
+  // the session id is one `--resume=<id>` argument (a bare --resume is not read); a new one is a UUID, as the real CLI's
+  const resume = argv.find((a) => a.startsWith('--resume='));
+  const session = resume ? resume.slice('--resume='.length) : crypto.randomUUID();
   const rec = { argv, stdin, cwd: process.cwd(), pid: process.pid };
   const q = stdin.trim();
   out({ type: 'system', subtype: 'init', session_id: session, tools: ['Read', 'Grep', 'Glob', 'Bash'], mcp_servers: [] });

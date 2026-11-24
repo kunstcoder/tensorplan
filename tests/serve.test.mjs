@@ -71,6 +71,51 @@ test('a static path cannot leave the map folder, and nothing under a dot folder 
   assert.equal(JSON.parse(g.body).schema, 'modelmap/graph@1');
 });
 
+const modeOf = (f) => fs.statSync(f).mode & 0o777;
+const posix = process.platform !== 'win32' ? false : 'file modes are POSIX';
+
+test('server.json holds the Ask token and records the run: this user reads it only, and the token in it works', { skip: skip || posix }, async () => {
+  const file = path.join(map, '.cache', 'server.json');
+  assert.equal(modeOf(file), 0o600);
+  // the content is what it was: this run's pid, port, address, token, script hash and start time
+  const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(Object.keys(s).sort(), ['hash', 'pid', 'port', 'startedAt', 'token', 'url']);
+  assert.equal(s.pid, srv.proc.pid);
+  assert.equal(s.port, srv.port);
+  assert.equal(s.url, 'http://127.0.0.1:' + srv.port);
+  assert.match(s.token, /^[0-9a-f]{32}$/);
+  assert.match(s.hash, /^[0-9a-f]{12}$/);
+  assert.ok(!Number.isNaN(Date.parse(s.startedAt)));
+  const status = await request(srv.port, { path: '/api/status', headers: { 'x-floorplan-token': s.token } });
+  assert.equal(status.status, 200);
+  assert.equal(JSON.parse(status.body).pid, s.pid);
+  // a map folder with no .cache yet: the server makes it for this user only
+  const fresh = path.join(tmpDir('modelmap-state-'), 'modelmap');
+  fs.cpSync(map, fresh, { recursive: true, filter: (f) => !f.includes(path.sep + '.cache') });
+  const second = await startServe(fresh);
+  try {
+    assert.equal(modeOf(path.join(fresh, '.cache')), 0o700);
+    assert.equal(modeOf(path.join(fresh, '.cache', 'server.json')), 0o600);
+  } finally { await second.stop(); }
+});
+
+test('a server.json an earlier run left with a looser mode is 0600 again once the server has started', { skip: skip || posix }, async () => {
+  const copy = path.join(tmpDir('modelmap-state-'), 'modelmap');
+  fs.cpSync(map, copy, { recursive: true, filter: (f) => !f.includes(path.sep + '.cache') });
+  const old = path.join(copy, '.cache', 'server.json');
+  fs.mkdirSync(path.dirname(old), { recursive: true });
+  fs.writeFileSync(old, JSON.stringify({ pid: 999999, port: 1, url: 'http://127.0.0.1:1', token: 'old-token', hash: 'x', startedAt: new Date(0).toISOString() }));
+  fs.chmodSync(old, 0o644);
+  assert.equal(modeOf(old), 0o644);
+  const second = await startServe(copy);
+  try {
+    assert.equal(modeOf(old), 0o600);
+    const s = JSON.parse(fs.readFileSync(old, 'utf8'));
+    assert.equal(s.pid, second.proc.pid, 'the file is this run\'s');
+    assert.equal(s.token, second.token);
+  } finally { await second.stop(); }
+});
+
 test('each run makes a new token, and the old one stops working', { skip }, async () => {
   const second = await startServe(map);
   try {

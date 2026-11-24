@@ -200,3 +200,10 @@ skills/ 아래 파일 54개는 A·B·C·D 중 어디에도 빠짐없이 들어 �
 - 새로 추가한 것(floorplan 에 없음): `lib/flow.mjs`(277줄), `lib/pytext.mjs`(128줄, Python 소스를 텍스트로 읽는 보조), `tests/flow.test.mjs`(10개) 와 `helpers-flow.mjs`, `fixtures/flow/`. 가상 노드(in·out·연산)는 모듈 수·검색·조회·파라미터 합계에서 빠진다. 선택 항목인 `Sequential` 자동 체인은 하지 않았다(흐름이 없는 지도까지 바뀌기 때문).
 - 검증: `node --test tests/*.test.mjs` 182개 통과. 함정용 `claude`·`codex` 를 PATH 맨 앞에 두고 돌렸고 한 번도 실행되지 않았다. 흐름이 없는 지도는 HEAD 로 만든 지도와 노드가 같고 `links` 가 비어 있다. 열릴 때의 배율을 실제 페이지에서 쟀다: `TransformerBlock` 흐름 0.546 에서 0.82(900×700 은 0.267 에서 0.82), 흐름이 없는 뷰(루트 1.1, encoder 0.944, blocks 0.85)는 HEAD 와 같다.
 - 하지 못한 것: 실제 Claude 가 쓴 흐름으로의 시험(모든 시험용 흐름은 손으로 쓴 예시), 실제 CLI, 라이트 테마 버튼·터치·Safari·Firefox, Python 3.9, Windows. 엣지 30개짜리 조밀한 흐름은 한 줄로 퍼져 확대해야 읽힌다. 900×700 이나 패널이 열린 상태에서는 흐름 오른쪽이 패널 밑에 가려져 팬이 필요하다.
+
+## 15. 작업 기록 (2026-11-24, 검토에서 나온 serve.mjs 수정 R1·R2·R3)
+
+- 독립 검토가 지적한 세 가지를 `skills/modelmap/assets/serve.mjs` 에서 고쳤다. R1: Ask 의 `claude -p` 는 스캔 대상(믿을 수 없는) 저장소를 작업 폴더로 삼아 그 저장소의 `.claude/settings.json`·`settings.local.json`(훅, 권한, env, apiKeyHelper)을 읽었다. 이제 `--setting-sources user` 를 한 번 넘긴다. R2: 페이지가 보낸 `session` 이 `--resume` 다음의 별도 인자로 들어가, `--` 로 시작하는 값이 새 옵션으로 읽혔다. 이제 정규 UUID 만 받아 `--resume=<id>` 한 인자로 넘기고, 세션이 없거나 빈 문자열·null 이면 새 대화, 그 밖의 값은 CLI 를 띄우지 않고 SSE `failure`(코드 `bad_session`)로 답한다. Codex 길은 그대로다.
+- R3: `.cache/server.json`(Ask 토큰)을 0600 으로 쓴다. 이전 실행이 0644 로 남긴 파일도 지우고 새로 쓴 뒤 `chmod` 한다. serve.mjs 가 직접 만드는 `.cache` 폴더는 0700 이다. 파일 내용과 `tests/supply-chain.test.mjs` 가 고정하는 기록 모양은 그대로다. 가짜 CLI 는 `--resume=<id>` 를 읽고 새 세션 id 로 UUID 를 낸다.
+- 검증: `node --test tests/*.test.mjs` 188개 통과(새 시험 6개: ask 4, serve 2). 수정을 하나씩 되돌린 복사본에서 새 시험이 실패하는 것을 확인했다. 시험한 것은 가짜 CLI 에 넘기는 인자와 파일 모드뿐이다.
+- 고치지 않은 것: 토큰이 페이지 안에 있어 `GET /` 는 이 컴퓨터의 어느 프로세스에게나 토큰을 준다(설계 문제, R3 의 이 부분은 그대로). Ask 의 CLI 는 저장소의 CLAUDE.md 를 여전히 읽는다(설정이 아니다). 실제 claude 를 악성 settings.json 으로 돌려 보지 못했고, `--setting-sources user` 가 실제 CLI 에서 프로젝트 설정을 막는지는 확인하지 못했다. 실제 CLI 가 UUID 가 아닌 session_id 를 주면 후속 질문이 `bad_session` 으로 거절된다. Windows 에서는 파일 모드 시험을 건너뛴다.
