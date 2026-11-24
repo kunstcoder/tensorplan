@@ -15,9 +15,10 @@
 | R6 | 심볼릭 링크 `modelmap/` 로 저장소 밖에 씀 | a74fc65 | 아래 §1.1 |
 | R8 | 정적 파일 경로가 심볼릭 링크를 따라감 (R21 의 Windows 8.3 이름 포함, 정적 검토만) | a74fc65 | 아래 §1.1 |
 | R9 일부 | 4300 자리를 넘는 정수가 `json.dumps` 를 죽이던 것(3.11 이상) | a74fc65 | R5 의 `MAX_BITS = 1024` 로 그런 정수가 아예 안 만들어진다. 3.11 이상에서는 다시 돌려 보지 않았다 |
-| R24 | `status.mjs` 가 `graph.json` 의 `head`·`path` 를 검사 없이 git 인자·`-C` 로 넘김 | R24·R7 수정 커밋 | 아래 §1.2 |
-| R7 | `open.mjs` 와 `serve.mjs --stop` 이 저장소가 커밋한 `.cache/server.json` 을 믿음 | R24·R7 수정 커밋 | 아래 §1.2. 소유자 검사는 uid 를 바꾼 단위 시험뿐 |
-| R18 일부 | `--stop` 이 죽이기 전에 서버의 `/api/status` 로 pid·root 를 확인함 | R24·R7 수정 커밋 | 같은 시험. 둘째 서버가 `server.json` 을 덮어쓰는 것은 그대로(§2.1) |
+| R24 | `status.mjs` 가 `graph.json` 의 `head`·`path` 를 검사 없이 git 인자·`-C` 로 넘김 | 8df5ec3 | 아래 §1.2 |
+| R7 | `open.mjs` 와 `serve.mjs --stop` 이 저장소가 커밋한 `.cache/server.json` 을 믿음 | 8df5ec3 | 아래 §1.2. 소유자 검사는 uid 를 바꾼 단위 시험뿐 |
+| R18 일부 | `--stop` 이 죽이기 전에 서버의 `/api/status` 로 pid·root 를 확인함 | 8df5ec3 | 같은 시험. 둘째 서버가 `server.json` 을 덮어쓰는 것은 그대로(§2.1) |
+| R28 | `open.mjs` 가 저장소가 커밋한 `modelmap/serve.mjs` 를 그대로 실행함. 같은 종류: 서버가 `import` 하는 `page-safety.mjs`, `new Function` 으로 읽는 `query.mjs`(Ask 가 허용하는 `node modelmap/query.mjs` 와 같은 파일), 내보내는 `index.html` | 028ef50 | 아래 §1.3. 가짜 CLI 만 썼다(워커가 손으로 한 재현 한 번에서 시작 확인이 실제 `claude --version` 만 한 번 돌렸다: 질문·모델 호출은 없었다) |
 
 ### 1.1 이번 라운드(R4·R5·R6·R8) 결과
 
@@ -38,16 +39,24 @@
 - R24: `head` 에 `--output=<파일>`·`--stat`·`-p`·대문자·6자·65자·`HEAD`·`main` 등 20가지, `path` 에 `..`·절대 경로·`-x`·`--output=`·링크 등 21가지를 넣어도 git 이 한 번도 불리지 않고 파일이 안 생긴다(PATH 의 `git` 껍데기가 기록). 정상 지도의 "same commit"·"N file(s) changed since"·uncommitted 는 그대로다.
 - R7: 29가지 틀린 `server.json` 과 링크를 `open.mjs`·`--stop` 에 넣어도 흉내 서버가 받은 요청이 0, 살아 있는 `sleep` 이 안 죽고, 적대적 주소가 출력·브라우저에 안 간다. 서버가 pid·root 를 맞게 답할 때만 pid 를 죽인다.
 
+### 1.3 이번 라운드(R28) 결과
+
+워커가 만들고 조정자가 확인했다: 전체 시험 세 번과 함정 실행, 재현 두 가지(`index.html` 과 `serve.mjs` 만 있는 폴더, 빌드된 지도의 네 파일을 적대적 파일로 바꾼 폴더)를 임시 폴더에서 다시 돌려 닫힘을 봤고, 수정 네 개(open 이 `writeMapFiles` 를 안 부름, graph.json 검사, `load()` 의 query.mjs 확인, Ask 앞의 확인)를 되돌린 복사본에서 새 시험이 빨개지는 것을 봤다. 시험 13개가 늘어 242개다(`trusted-code.test.mjs` 12, supply-chain 1). 기존 시험 5개는 틀만 바꿨다(폴더 안에서 고쳐 놓던 `serve.mjs` 흉내는 플러그인 복사본의 assets 로, `hash` 값은 세 코드 파일의 것으로, `new Function` 고정은 `readQuery` 로). `node --test tests/*.test.mjs` 를 세 번 돌려 모두 242/242(20~21초), 함정용 `claude`·`codex` 를 PATH 맨 앞에 둔 실행에서도 한 번도 안 불렸다(242/242, 약 20초). 수정을 하나씩 되돌린 복사본에서 새 시험이 빨개지는 것을 확인했다(`UPSTREAM.md` §18).
+
+- 재현: `modelmap/` 에 `index.html` 과 표식 파일을 만드는 `serve.mjs` 만 둔 저장소. 수정 전에는 그 `serve.mjs` 가 `ran as --no-open --idle-exit 120` 으로 실행됐다. 수정 뒤에는 `✗ No built map here yet. Run build.mjs first.`, 종료 코드 1, 폴더는 그대로, 표식 없음.
+- 빌드된 지도의 네 파일(`index.html`·`query.mjs`·`serve.mjs`·`page-safety.mjs`)을 적대적 파일로 바꾼 뒤(읽기 전용 `serve.mjs` 포함, `--out` 도) `open.mjs` 를 돌리면 NOTE 가 네 줄 나오고 네 파일이 다른 폴더의 build 와 바이트가 같아지며, 표식은 3초 뒤에도 없고, 서버의 `GET /` 에 적대적 페이지의 글이 없고, `/api/status` 의 `hash` 가 세 코드 파일의 해시다. 정상 흐름(scan → build → open → open)의 두 번째 open 은 파일(바이트·시각)·pid·출력이 같다.
+- 실행 중인 서버에서 `query.mjs` 를 바꾸고 `index.html` 을 건드리면 로드하지 않고(표식 없음, 옛 지도, 로그 한 줄), 그때의 Ask 는 CLI 를 띄우지 않고 실패 이벤트로 끝난다(Claude·Codex 길 모두). 같은 플러그인의 재빌드는 그대로 reload 된다. `build.mjs` 의 출력은 `1f1a6bf` 와 같은 scan 에서 바이트 동일하다.
+- 하지 못한 것: 실제 CLI(금지), Windows, Node 18 실행. 서버의 정적 파일 경로가 `modelmap/` 의 `.html`·`.svg`·`.js` 를 그 종류대로 내보내는 것은 감사에서 찾았으나 고치지 않았다(아래 §2.0).
+
 ## 2. 고쳐야 할 것, 먼저 할 순서대로
 
-### 2.0 R28 (HIGH, 재현함) `open.mjs` 가 저장소에 커밋된 `modelmap/serve.mjs` 를 그대로 실행함
+### 2.0 R28 (고침, 남은 것만)
 
-R24·R7 수정 중에 워커가 "다른 종류라 고치지 않았다"며 보고했고, 조정자가 재현했다. `skills/modelmap/scripts/open.mjs` 는 `<map>/serve.mjs`(`serveFile`)를 `node` 로 띄운다. `modelmap/` 아래는 저장소가 통째로 커밋할 수 있다. 이 폴더는 build 가 모든 파일을 새로 쓸 때만 믿을 수 있는데, open 은 build 를 거쳤는지 확인하지 않는다.
-- 재현: 임시 저장소에 `modelmap/index.html` 과, 표식 파일을 만드는 `modelmap/serve.mjs` 만 두고 `node open.mjs <repo> --no-open` 을 돌리면 그 `serve.mjs` 가 실행된다(`ran as --no-open --idle-exit 120`). `open.mjs` 는 `index.html` 과 `serve.mjs` 가 있는지만 본다.
-- 현실성: `status.mjs` 는 `graph.json` 이 있으면 "map" 이라고 알리고(`A map exists…`), 그러면 곧바로 open 으로 가기 쉽다. build 가 `modelmap/.gitignore` 에 `*` 를 쓰므로 저장소가 이 폴더를 커밋하려면 강제로 넣어야 하지만, 악의적인 저장소는 그렇게 한다.
-- 같은 종류(코드·페이지가 저장소 것): (1) Ask 가 허용하는 명령 `node modelmap/query.mjs` 는 저장소가 커밋한 `query.mjs` 이기도 하다(`serve.mjs` 의 `--allowedTools Bash(node modelmap/query.mjs:*)`). (2) `serve.mjs` 는 `modelmap/index.html` 을 읽어 토큰을 넣어 내보낸다. 저장소가 커밋한 `index.html` 은 자기 스크립트를 가지고 있고 토큰을 읽어 `/api/ask` 를 부를 수 있다(CSP 는 build 가 쓴 페이지에만 있다). (3) `serve.mjs` 가 `import` 하는 `page-safety.mjs`.
-- 제안(워커가 고른다): (a) 가장 튼튼한 것: open 과 `--stop` 이 지도 폴더의 코드를 실행하지 않는다. 플러그인 자신의 `assets/serve.mjs`·`query` 코드를 `--map <폴더>` 로 실행하고 `modelmap/` 아래는 데이터로만 읽는다(`index.html` 은 build 가 템플릿과 `graph.json` 으로 다시 만들거나, 서버가 읽을 때 플러그인 템플릿에서 만든다). (b) 더 작은 것: open 이 실행 전에 `serve.mjs`·`query.mjs`·`page-safety.mjs` 의 해시를 플러그인의 원본(`assets/`)과 대조하고 다르면 거부하며 "build.mjs 를 먼저 돌려라" 라고 말한다. `index.html` 은 build 가 템플릿에서 만든 것이므로 `graph.json` 에서 다시 만들어 비교하거나, 플러그인이 자기 템플릿으로 다시 쓴다. (c) 응급처치: `SKILL.md` 의 순서에서 open 전에 항상 `build.mjs` 를 돌리도록 하고, `open.mjs` 가 `graph.json` 에 기록된 빌드가 이 컴퓨터의 것이 아니면 거부한다(저장소가 이 표식도 커밋할 수 있어 근본 해결은 아니다).
-- 시험: 위 재현을 시험으로 만든다(표식 파일이 안 생기고 종료 코드 1과 설명이 나옴). 정상 흐름(scan → build → open)은 그대로 통과해야 한다. Ask 의 `query.mjs` 쪽은 가짜 CLI 로, 저장소가 커밋한 `query.mjs` 가 실행되지 않는 것을 본다.
+고친 내용은 `UPSTREAM.md` §18 에 있다(`open.mjs` 가 서버를 찾거나 띄우기 전에 네 파일을 플러그인 것으로 쓰고, 서버가 시작 때의 `query.mjs` 해시를 지킨다). 고치지 않은 것:
+- 아직 만들거나 연 적 없는 `modelmap/` 에서 손으로 `node modelmap/serve.mjs` 나 `--stop` 을 돌리는 것(그 파일을 믿을 수 있게 만들 방법이 플러그인 안에는 없다).
+- 서버가 도는 동안 저장소 갱신(`git pull`)이 `index.html` 을 강제로 덮어쓰는 것(서버가 다시 읽어 다음 `open.mjs` 가 다시 쓸 때까지 그 페이지를 서빙한다. `query.mjs` 와 Ask 쪽은 닫혔다).
+- `graph.json` 의 내용이 페이지에 그려지는 적대적 데이터인 것(R9 류), `.cache/scan.json` 과 `descriptions/*.json` 을 데이터로 읽는 것(`describe.mjs`), 그 밖의 항목(R9..R20, R22, R23, R25..R27, R29).
+- 감사에서 더 찾음: 서버의 정적 파일 경로는 `modelmap/` 의 `.html`·`.svg`·`.js` 를 그 종류 그대로 같은 출처에서 내보낸다(저장소가 `modelmap/x.html` 을 커밋하고 사용자가 그 주소로 가면 그 페이지가 `GET /` 로 토큰을 읽을 수 있다. `tests/serve.test.mjs` 가 이 정적 서빙을 고정하고 있어 건드리지 않았다). 제안: 정적 응답에 `Content-Security-Policy: sandbox` 와 `X-Content-Type-Options: nosniff` 를 달거나 허용 목록(`graph.json` 등)만 내보낸다.
 
 ### 2.0b R24 (고침) `status.mjs` 가 `graph.json` 의 값을 검사 없이 git 인자로 넘김
 
@@ -124,10 +133,9 @@ NTFS 에서 8.3 이름이 켜져 있으면 `.cache` 에 `CACHE~1` 같은 짧은 
 
 ## 6. 권장 순서
 
-1. **R28** (HIGH, 저장소가 커밋한 코드·페이지가 실행되거나 토큰을 받는 것: `open.mjs`, Ask 의 `query.mjs`, `index.html`). 공개 저장소에서 가장 먼저 닫을 것.
-2. **R16 + R18 의 나머지 + R19** (서버 쪽, 한 워커): 모두 `serve.mjs`·`open.mjs` 의 작은 변경이고 가짜 CLI 로 시험할 수 있다. R18 은 `--stop` 이 죽이기 전에 `/api/status` 로 확인하는 절반을 했고(`UPSTREAM.md` §17), 서버가 둘 뜨는 것을 막는 절반이 남았다.
-3. **R1 확인 + R3 나머지 + CLAUDE.md + R4 의 Ask 쪽 git** (사용자 결정과 실제 CLI 호출 1~2회가 필요).
-4. **R9 + R10 + R17 + R25 + R26** (스캐너 견고성, pyscan.py·scan.mjs).
-5. **R11 + R12 + R13** (숫자 정확성: 접기, YAML 1.1, 버퍼). "아는 척하지 않기"(`?`·`≥`)가 원칙이다.
-6. **R14 + R22 + R20 + R15 + R23 + R27 + R29 + 작은 항목** (테스트와 문서).
-7. 그다음에 `docs/decisions.md` 의 열린 항목: 라이선스 결정, 연구 저장소 3~5곳에서의 해결률 측정, torch `numel()` 대조, README, 아직 미작성인 `UPSTREAM.md` 행들.
+1. **정적 파일 경로의 활성 콘텐츠**(§2.0 의 마지막 항목: 정적 응답에 `Content-Security-Policy: sandbox` 와 `nosniff`, 작은 수정과 시험 하나) **+ R16 + R18 의 나머지 + R19** (서버 쪽, 한 워커): 모두 `serve.mjs`·`open.mjs` 의 작은 변경이고 가짜 CLI 로 시험할 수 있다. R18 은 `--stop` 이 죽이기 전에 `/api/status` 로 확인하는 절반을 했고(`UPSTREAM.md` §17), 서버가 둘 뜨는 것을 막는 절반이 남았다.
+2. **R1 확인 + R3 나머지 + CLAUDE.md + R4 의 Ask 쪽 git** (사용자 결정과 실제 CLI 호출 1~2회가 필요).
+3. **R9 + R10 + R17 + R25 + R26** (스캐너 견고성, pyscan.py·scan.mjs).
+4. **R11 + R12 + R13** (숫자 정확성: 접기, YAML 1.1, 버퍼). "아는 척하지 않기"(`?`·`≥`)가 원칙이다.
+5. **R14 + R22 + R20 + R15 + R23 + R27 + R29 + 작은 항목** (테스트와 문서).
+6. 그다음에 `docs/decisions.md` 의 열린 항목: 라이선스 결정, 연구 저장소 3~5곳에서의 해결률 측정, torch `numel()` 대조, README, 아직 미작성인 `UPSTREAM.md` 행들.
