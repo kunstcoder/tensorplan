@@ -100,19 +100,36 @@ if (!status) {
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   // serve.mjs will not start over a symbolic link at its record: take the link away (never what it points to)
   try { if (fs.lstatSync(stateFile).isSymbolicLink()) fs.unlinkSync(stateFile); } catch {}
+  // The record found above is stale, or its server was just stopped: take it away too, so the new server, which writes its record only
+  // when there is none (one server per map folder), does not have to judge it again. Only the file that was judged, and not when the
+  // server of it (s: checked above, and sent the stop) is still running: it keeps its record, and the new server will find it there.
+  if (found.raw !== null && !(s && alive(s.pid))) { try { if (fs.readFileSync(stateFile, 'utf8') === found.raw) fs.unlinkSync(stateFile); } catch {} }
   const log = fs.openSync(path.join(dir, '.cache', 'server.log'), 'w');
   const prev = s?.pid;
-  spawn(process.execPath, [serveFile, '--no-open', '--idle-exit', String(IDLE_MINUTES), ...pass], {
+  const child = spawn(process.execPath, [serveFile, '--no-open', '--idle-exit', String(IDLE_MINUTES), ...pass], {
     cwd: root, detached: true, stdio: ['ignore', log, log], windowsHide: true,
-  }).unref();
+  });
+  child.unref();
+  let exited = false;
+  child.on('exit', () => { exited = true; });
   // finding the Claude Code or Codex CLI takes a few seconds before the server listens
   for (let i = 0; i < 100; i++) {
     await sleep(200);
     // the new server's own record: not the one that was there before (a stale record is not read again), and it has to pass the same checks
     const n = readServerRecord(stateFile);
-    if (!n.rec || n.raw === found.raw || n.rec.pid === prev || !alive(n.rec.pid)) continue;
-    const st = await verifiedStatus(n.rec, mapRoot);
-    if (st) { s = n.rec; status = st; break; }
+    if (n.rec && n.raw !== found.raw && n.rec.pid !== prev && alive(n.rec.pid)) {
+      const st = await verifiedStatus(n.rec, mapRoot);
+      if (st) { s = n.rec; status = st; break; }
+    }
+    // The server started here stopped by itself: serve.mjs does that, with a line in its log, when a server of this map is already
+    // running (one per map folder; a start by hand raced this one). That server is the map's: if its record checks out, it is shown
+    // as it is, and nothing says a new one was started. Otherwise this is the usual "didn't start" below, without waiting any longer.
+    if (exited) {
+      const o = readServerRecord(stateFile);
+      const st = o.rec && alive(o.rec.pid) ? await verifiedStatus(o.rec, mapRoot) : null;
+      if (st) { s = o.rec; status = st; }
+      break;
+    }
   }
   if (!status) {
     console.error(`✗ The map server didn't start. Its log is in ${rel}/.cache/server.log. The map still opens as a file: ${rel}/index.html`);

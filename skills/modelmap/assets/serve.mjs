@@ -9,11 +9,13 @@
 //        node modelmap/serve.mjs --stop
 //        node modelmap/serve.mjs --export [<file>] [--include flows,notes]   (a copy to share; default flows,notes)
 // Environment: MODELMAP_ENGINE, MODELMAP_MODEL, MODELMAP_EDITOR, MODELMAP_CLAUDE, MODELMAP_CODEX stand for the options.
+//   MODELMAP_PASS_ENV=NAME,PREFIX_* names more variables of this environment for the CLI to get (the rest is not passed; see cliEnv).
 //
 // The server listens on 127.0.0.1 only. Each question runs in the repo root, on your own account:
 // `claude -p` with read-only tools (Read, Grep, Glob, and Bash limited to node modelmap/query.mjs), or
 // `codex exec` in its read-only sandbox. It uses the one that built the map, else whichever is installed.
-// When the map is rebuilt, open tabs reload in place. The running server is recorded in .cache/server.json.
+// When the map is rebuilt, open tabs reload in place. The running server is recorded in .cache/server.json: one server per map
+// folder (a second one says so and exits 1). At most two questions run at once.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -223,14 +225,57 @@ const isEngine = (k) => typeof k === 'string' && Object.hasOwn(ENGINES, k);
 const want = isEngine(asked) ? asked : isEngine(builtBy) ? builtBy : 'claude';
 let engine = null, cli = null;
 for (const k of isEngine(asked) ? [asked] : [want, ...Object.keys(ENGINES).filter((k) => k !== want)]) { cli = ENGINES[k].find(); if (cli) { engine = k; break; } }
+// ---------- the environment the CLI gets (cliEnv) ----------
+// The CLI, and every process it starts (it may run node modelmap/query.mjs), get the variables they need and no others: this server's
+// own environment also holds the person's other secrets (GITHUB_TOKEN, cloud keys) and variables that make a program load code
+// (NODE_OPTIONS, LD_PRELOAD, BASH_ENV). cliEnv() is the one place that decides, for the --version check, the Claude run and the Codex run.
+//   passed: the system's own (HOME, PATH, locale, terminal, XDG_*), the network's (proxies, certificate files), the two CLIs' own settings
+//     (ANTHROPIC_*, CLAUDE_*, OPENAI_*, CODEX_*), the cloud credentials of a mode that is switched on in this environment (below), and
+//     the names the person adds: MODELMAP_PASS_ENV=NAME,PREFIX_* in the environment of this server.
+//   never passed, whatever matched (also not by MODELMAP_PASS_ENV): ENV_NEVER, and any name with TOKEN, SECRET, PASSWORD or KEY in it unless
+//     it is one of the CLIs' own (a cloud mode passes its own credentials).
+// NOT checked against the real Claude Code and Codex CLIs (not run here): that they still sign in and answer with this environment, and
+// which variables their cloud modes need. Only the fake CLI of the tests has seen it.
 // Started from inside a Claude Code or Codex session? Don't let the CLI think it's nested in it.
+const ENV_NESTED = /^CLAUDE_?CODE_(SESSION|ENTRYPOINT|CHILD|MESSAGING|HOST|SDK)|^CLAUDECODE$|^CODEX_(THREAD_ID|SESSION_ID|TOOL_CALL_ID|CI$|SANDBOX)/;
+const ENV_SYSTEM = /^(HOME|USER|LOGNAME|SHELL|PATH|TMPDIR|TEMP|TMP|TZ|LANG|LC_\w*|TERM|COLORTERM|NO_COLOR|FORCE_COLOR|XDG_\w*|(HTTPS?|ALL|NO)_PROXY|(https?|all|no)_proxy|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/;
+const ENV_WINDOWS = /^(SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|USERPROFILE|APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES.*|HOMEDRIVE|HOMEPATH)$/; // names are upper-cased there
+const ENV_OWN = /^(ANTHROPIC|CLAUDE|OPENAI|CODEX)_/;
+const ENV_NEVER = /^(NODE_OPTIONS|NODE_PATH|NODE_REPL_.*|PYTHON.*|LD_.*|DYLD_.*|BASH_ENV|ENV|PS4|GIT_.*|SSH_AUTH_SOCK)$/;
+const ENV_SECRET = /TOKEN|SECRET|PASSWORD|KEY/;
+// a cloud mode of Claude Code: the variable that switches it on, and the credentials that then go with it
+const ENV_CLOUDS = [['CLAUDE_CODE_USE_BEDROCK', /^AWS_/], ['CLAUDE_CODE_USE_VERTEX', /^(GOOGLE_|GCLOUD_|CLOUD_ML_REGION$)/], ['CLAUDE_CODE_USE_FOUNDRY', /^AZURE_/]];
+const IS_WIN = process.platform === 'win32'; // names are not case-sensitive there
+const PASS_NAME = /^[A-Za-z_][A-Za-z0-9_]*\*?$/; // NAME, or PREFIX* (the star last)
+const passAsked = String(process.env.MODELMAP_PASS_ENV || '').split(',').map((s) => s.trim()).filter(Boolean);
+const passNames = passAsked.filter((s) => PASS_NAME.test(s));
+const passList = passNames.map((s) => (IS_WIN ? s.toUpperCase() : s));
+const neverPassed = (name) => ENV_NEVER.test(name.toUpperCase()) || (!ENV_OWN.test(name) && ENV_SECRET.test(name.toUpperCase()));
 function cliEnv() {
-  const env = { ...process.env };
-  for (const k of Object.keys(env)) if (/^CLAUDE_?CODE_(SESSION|ENTRYPOINT|CHILD|MESSAGING|HOST|SDK)|^CLAUDECODE$|^CODEX_(THREAD_ID|SESSION_ID|TOOL_CALL_ID|CI$|SANDBOX)/.test(k)) delete env[k];
+  const on = ENV_CLOUDS.filter(([switchName]) => !/^(|0|false|no|off)$/i.test(String(process.env[switchName] ?? 'off').trim())).map(([, re]) => re);
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    const n = IS_WIN ? k.toUpperCase() : k, U = k.toUpperCase();
+    if (ENV_NESTED.test(k) || ENV_NEVER.test(U)) continue;
+    const own = ENV_OWN.test(n), cloud = on.some((re) => re.test(n));
+    if (!own && ENV_SECRET.test(U)) { if (cloud) env[k] = v; continue; }
+    if (own || cloud || ENV_SYSTEM.test(n) || (IS_WIN && ENV_WINDOWS.test(n)) || passList.some((p) => (p.endsWith('*') ? n.startsWith(p.slice(0, -1)) : n === p))) env[k] = v;
+  }
   return env;
 }
+/** What the start output says about MODELMAP_PASS_ENV: nothing unless it is set; names only, never values. */
+function passNote() {
+  if (!passAsked.length) return [];
+  const lines = [`also passing these variables to the CLI (MODELMAP_PASS_ENV): ${passNames.join(', ') || 'none'}`];
+  const never = passNames.filter((p) => !p.endsWith('*') && neverPassed(p));
+  if (never.length) lines.push(`  never passed, even when named: ${never.join(', ')}`);
+  const bad = passAsked.length - passNames.length;
+  if (bad) lines.push(`  ignored, as they are not NAME or PREFIX*: ${bad} ${bad === 1 ? 'entry' : 'entries'}`);
+  return lines;
+}
+// ---------- end of the environment the CLI gets ----------
 let version = null;
-if (cli) { try { version = execFileSync(cli.cmd, [...cli.args, '--version'], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); } catch {} }
+if (cli) { try { version = execFileSync(cli.cmd, [...cli.args, '--version'], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: cliEnv() }).trim(); } catch {} }
 
 // The page, the graph, and the instructions and answer schema (from query.mjs's inlined graph-query
 // code). Loaded at start and again whenever the map is rebuilt.
@@ -289,6 +334,10 @@ const readFlows = () => { try { return readJson(flowsFile).flows || []; } catch 
 
 // ---------- asking ----------
 const nameFor = (id) => { try { return core.q.brief(id)?.name || id; } catch { return id; } };
+// Questions in flight: the CLI runs, by the id the page got in the question's `start` event. At most MAX_ASKS at once; one more is
+// refused at once with the failure code 'busy' (never queued), and /api/cancel stops the one run whose id it is given.
+const MAX_ASKS = 2;
+const BUSY = 'Two questions are already running. Try again when one has finished.';
 const running = new Map();
 const rel = (p) => String(p || '').replace(/\\/g, '/').replace(root.replace(/\\/g, '/') + '/', '');
 /** A shell command, in words: map lookups by name, then searches, file reads and listings. */
@@ -444,6 +493,7 @@ function ask(req, res, body) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
   const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   if (!cli) { send('failure', { code: 'cli_missing', message: `${ENGINES[want].name} not found.` }); return res.end(); }
+  if (running.size >= MAX_ASKS) { send('failure', { code: 'busy', message: BUSY }); return res.end(); }
   runAgent(res, send, body)
     .then((a) => send('answer', a), (e) => { if (e !== CLOSED) send('failure', { code: e.code === 'bad_session' || e.code === 'query_changed' ? e.code : failCode(e.message), message: e.message }); })
     .finally(() => res.end());
@@ -504,7 +554,17 @@ const server = http.createServer((req, res) => {
         return;
       }
     }
-    if (req.method === 'POST' && url.pathname === '/api/cancel') { for (const c of running.values()) c.kill(); res.writeHead(204); return res.end(); }
+    // stops the one run whose id (from that question's `start` event) is in the body; no id, a bad one, or one of nothing running stops nothing
+    if (req.method === 'POST' && url.pathname === '/api/cancel') {
+      let raw = '';
+      req.on('data', (d) => { raw += d; if (raw.length > 1000) req.destroy(); });
+      req.on('end', () => {
+        let id; try { id = JSON.parse(raw).id; } catch {}
+        if (typeof id === 'string' && /^[0-9a-f]{12}$/.test(id)) running.get(id)?.kill();
+        res.writeHead(204); res.end();
+      });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/export') {
       let raw = '';
       req.on('data', (d) => { raw += d; if (raw.length > 500000) req.destroy(); });
@@ -531,11 +591,15 @@ const server = http.createServer((req, res) => {
     res.writeHead(404); return res.end();
   }
   if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Cache-Control': 'no-store' }); return res.end(page); }
+  // What is left is a file of the map folder, which a repo can fill (x.html, x.svg, x.js): it is served for what it is, but inert.
+  // `sandbox` without any allow-… token gives it an opaque origin with no scripts and no forms, so a page opened at its address
+  // cannot fetch('/') to read the Ask token the real page carries, nor call /api/ask; nosniff keeps the type as sent.
+  const inert = { 'Content-Security-Policy': 'sandbox', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' };
   let file;
-  try { file = path.join(here, decodeURIComponent(url.pathname)); } catch { res.writeHead(400); return res.end('bad address'); }
+  try { file = path.join(here, decodeURIComponent(url.pathname)); } catch { res.writeHead(400, inert); return res.end('bad address'); }
   const real = staticFile(file);
-  if (!real) { res.writeHead(404); return res.end('not found'); }
-  res.writeHead(200, { 'Content-Type': TYPES[path.extname(real)] || 'application/octet-stream' });
+  if (!real) { res.writeHead(404, inert); return res.end('not found'); }
+  res.writeHead(200, { 'Content-Type': TYPES[path.extname(real)] || 'application/octet-stream', ...inert });
   fs.createReadStream(real).pipe(res);
 });
 // another map (or anything else) on the port: take the next free one
@@ -546,24 +610,68 @@ server.on('error', (e) => {
   process.exit(1);
 });
 server.listen(port, '127.0.0.1');
-server.on('listening', () => {
+// ---------- one server per map folder ----------
+// .cache/server.json is how --stop and open.mjs find this server, so a second server must not replace it. It is written with 'wx'
+// (only when it does not exist). When it exists and names a live server of this map, this one is the second and says so; when it is
+// there but is no live server of this map (not valid, a dead pid, nothing answering, another pid or map), it is stale and replaced.
+// Nothing is killed here.
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }; // EPERM: a process of another user, not ours
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const readRaw = () => { try { const st = fs.lstatSync(stateFile); return st.isFile() && st.size <= 4096 ? fs.readFileSync(stateFile, 'utf8') : null; } catch { return null; } };
+/** { live, raw }: live is the record of the running server of this map that the file names, or null; raw is the file's text that was judged. */
+async function judgeRecord() {
+  let rec = null, raw = null;
+  for (let i = 0; i < 4; i++) {
+    rec = readServerRecord(stateFile); raw = readRaw();
+    if (rec) break;
+    // a server that is writing its record right now has made the file and not filled it yet: look again before calling it stale
+    let age = Infinity; try { age = Date.now() - fs.lstatSync(stateFile).mtimeMs; } catch {}
+    if (age > 1000) break;
+    await sleep(150);
+  }
+  return { live: rec && alive(rec.pid) && await verifiedStatus(rec) ? rec : null, raw };
+}
+/** Writes this server's record. Resolves { other } when a live server of this map has its record, { warn } when it can't be written at all
+ *  (a read-only folder: the map still works), else {}. Throws when a stale record can't be replaced. */
+async function claimRecord(text) {
+  try { fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 }); } catch (e) { return { warn: e }; }
+  for (let round = 0; round < 3; round++) {
+    try {
+      // This file holds the token: only this user reads it (mode 0600 when it is made, and set again after the write)
+      fs.writeFileSync(stateFile, text, { flag: 'wx', mode: 0o600 });
+      fs.chmodSync(stateFile, 0o600);
+      return {};
+    } catch (e) { if (e.code !== 'EEXIST') { if (round === 0) return { warn: e }; throw e; } }
+    const { live, raw } = await judgeRecord();
+    if (live) return { other: live };
+    // stale: remove it, unless it is another file by now (a server that replaced it meanwhile is judged in the next round)
+    if (readRaw() === raw) { try { fs.unlinkSync(stateFile); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
+  }
+  throw new Error('another server keeps writing it');
+}
+server.on('listening', async () => {
   port = server.address().port; // --port 0: the free port the system picked
   const u = `http://127.0.0.1:${port}`;
-  try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 });
-    // This file holds the token: only this user reads it. A file left by an earlier run keeps its old mode when it
-    // is written over, so remove it first, and set the mode again after the write.
-    try { fs.unlinkSync(stateFile); } catch {}
-    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
-    fs.chmodSync(stateFile, 0o600);
-  } catch {}
-  const forget = () => { try { if (readState()?.pid === process.pid) fs.unlinkSync(stateFile); } catch {} };
+  const forget = () => { try { if (readState()?.pid === process.pid) fs.unlinkSync(stateFile); } catch {} }; // only a record that is this server's own
   process.on('exit', forget);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(0));
+  const folder = path.relative(process.cwd(), here).replace(/\\/g, '/') || '.';
+  let claim;
+  try { claim = await claimRecord(JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString() }, null, 2)); } catch (e) {
+    console.error(`✗ Couldn't replace the old ${folder}/.cache/server.json (${e.code || e.message}). Remove it, then start the server again.`);
+    process.exit(1);
+  }
+  if (claim.other) {
+    console.error(`✗ A map server for this folder is already running at ${claim.other.url} (pid ${claim.other.pid}). Stop it with node ${folder}/serve.mjs --stop or open it with open.mjs.`);
+    server.close();
+    process.exit(1);
+  }
+  if (claim.warn) console.error(`NOTE  Couldn't write ${folder}/.cache/server.json (${claim.warn.code || claim.warn.message}): --stop and open.mjs won't find this server.`);
   console.log(`modelmap: ${u}`);
   console.log(cli
     ? `asking via ${ENGINES[engine].name} ${version || ''} (${cli.path})${model ? `, model ${model}` : ''}`
     : `${ENGINES[want].name} not found: the map works, but asking questions needs it (${ENGINES[want].site}). Pass --${want} <path> if it is installed somewhere unusual.`);
+  for (const line of passNote()) console.log(line);
   if (!has('no-open')) {
     const opener = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', u]] : process.platform === 'darwin' ? ['open', [u]] : ['xdg-open', [u]];
     try { spawn(opener[0], opener[1], { stdio: 'ignore', detached: true }).unref(); } catch {}

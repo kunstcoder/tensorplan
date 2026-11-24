@@ -31,20 +31,24 @@ export function query(map, ...args) {
   return { status: r.status, json, stdout: r.stdout, stderr: r.stderr };
 }
 
-/** Start <map>/serve.mjs on a free port with the fake CLI. Resolves { port, token, url, proc, log, stop }. */
-export function startServe(map, { args = [], env = {}, claude = FAKE_CLAUDE } = {}) {
+/** Start <map>/serve.mjs on a free port with the fake CLI. Resolves { port, token, url, proc, log, stop }.
+ *  serve.mjs gives its CLI only the variables it needs (R16), so the fake CLI's own FAKE_* ones are named here, with MODELMAP_PASS_ENV
+ *  (the way a person would), not allowed in serve.mjs. bare: the server gets exactly env, nothing of this process's environment. */
+export function startServe(map, { args = [], env = {}, claude = FAKE_CLAUDE, bare = false } = {}) {
   const log = path.join(tmpDir('modelmap-fakelog-'), 'calls.jsonl');
   const proc = spawn(process.execPath, [path.join(map, 'serve.mjs'), '--claude', claude, '--no-open', '--port', '0', ...args], {
-    cwd: path.dirname(map), env: { ...process.env, FAKE_CLAUDE_LOG: log, ...env }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: path.dirname(map), env: { ...(bare ? {} : process.env), MODELMAP_PASS_ENV: 'FAKE_*', FAKE_CLAUDE_LOG: log, ...env }, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let out = '';
+  let out = '', started = false;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { proc.kill(); reject(new Error('serve.mjs did not start: ' + out)); }, 15000);
     proc.stderr.on('data', (d) => { out += d; });
     proc.stdout.on('data', (d) => {
       out += d;
       const m = /modelmap: (http:\/\/127\.0\.0\.1:(\d+))/.exec(out);
-      if (!m) return;
+      // once: the lines that follow it arrive as chunks of their own, when a test may already have stopped the server (and its record is gone)
+      if (!m || started) return;
+      started = true;
       clearTimeout(timer);
       const state = JSON.parse(fs.readFileSync(path.join(map, '.cache', 'server.json'), 'utf8'));
       const stop = () => new Promise((r) => { if (proc.exitCode !== null) return r(); proc.once('exit', () => r()); proc.kill(); });
@@ -86,6 +90,39 @@ export async function ask(srv, body) {
   const r = await request(srv.port, { method: 'POST', path: '/api/ask', headers: { 'content-type': 'application/json', 'x-floorplan-token': srv.token }, body });
   return { ...r, events: events(r.body) };
 }
+
+/** POST /api/ask and follow its events as they come: { started: promise of the id in the `start` event (it never settles when there is none),
+ *  events: the events so far, done: promise of { status, events } once the stream ended, abort(): close the connection, as a page does }. */
+export function askStream(srv, body) {
+  const seen = [];
+  let buf = '', startedId, req;
+  const started = new Promise((r) => { startedId = r; });
+  const done = new Promise((resolve) => {
+    req = http.request({ host: '127.0.0.1', port: srv.port, method: 'POST', path: '/api/ask', timeout: 30000,
+      headers: { host: '127.0.0.1:' + srv.port, 'content-type': 'application/json', 'x-floorplan-token': srv.token } }, (res) => {
+      res.setEncoding('utf8');
+      res.on('data', (d) => {
+        buf += d;
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const [ev] = events(buf.slice(0, i + 2)); buf = buf.slice(i + 2);
+          if (!ev) continue;
+          seen.push(ev);
+          if (ev.event === 'start') startedId(ev.data.id);
+        }
+      });
+      res.on('end', () => resolve({ status: res.statusCode, events: seen }));
+      res.on('error', (e) => resolve({ error: e.code || e.message, events: seen }));
+    });
+    req.on('error', (e) => resolve({ error: e.code || e.message, events: seen }));
+    req.on('timeout', () => { req.destroy(); resolve({ error: 'timeout', events: seen }); });
+    req.end(JSON.stringify(body));
+  });
+  return { started, events: seen, done, abort: () => req.destroy() };
+}
+
+/** POST /api/cancel with the token; body is sent as it is (a string) or as JSON. Resolves { status }. */
+export const cancel = (srv, body) => request(srv.port, { method: 'POST', path: '/api/cancel', headers: { 'content-type': 'application/json', 'x-floorplan-token': srv.token }, ...(body === undefined ? {} : { body }) });
 
 export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 export const waitFor = async (fn, ms = 10000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 50)); } return null; };

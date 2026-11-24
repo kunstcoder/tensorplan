@@ -117,7 +117,10 @@ test('a server.json an earlier run left with a looser mode is 0600 again once th
 });
 
 test('each run makes a new token, and the old one stops working', { skip }, async () => {
-  const second = await startServe(map);
+  // another server of the same map folder would not start (one server per map folder): this one is a copy's
+  const copy = path.join(tmpDir('modelmap-state-'), 'modelmap');
+  fs.cpSync(map, copy, { recursive: true, filter: (f) => !f.includes(path.sep + '.cache') });
+  const second = await startServe(copy);
   try {
     assert.notEqual(second.token, srv.token);
     assert.match(second.token, /^[0-9a-f]{32}$/);
@@ -223,6 +226,70 @@ test('static files: a symbolic link is never followed (outside file, .cache/serv
       assert.equal(r.status, 200, p);
       assert.match(r.headers['content-type'], type, p);
     }
+    // a plain file that is not index.html carries the inert headers (below); / and /index.html are the page itself and do not
+    for (const p of ['/graph.json', '/query.mjs', '/notes.json', '/descriptions/x.json']) {
+      const r = await request(second.port, { path: p });
+      assert.equal(r.headers['content-security-policy'], 'sandbox', p);
+      assert.equal(r.headers['x-content-type-options'], 'nosniff', p);
+    }
     assert.deepEqual(JSON.parse((await request(second.port, { path: '/notes.json' })).body), { plain: true });
   } finally { await second.stop(); fs.rmSync(w, { recursive: true, force: true }); }
+});
+
+// R30: a repo can commit modelmap/x.html (or .svg, .js …). Opened at its address it would run in the map's origin, read the Ask token
+// from GET / and call /api/ask. Everything the static route sends is inert: `Content-Security-Policy: sandbox` (an opaque origin, no
+// scripts, no forms, no same-origin access) and `nosniff`; the types it sends are the ones it always sent.
+const HOSTILE_PAGE = '<!doctype html><title>x</title><script>fetch("/").then((r) => r.text()).then((t) => { const k = /"token":"([0-9a-f]+)"/.exec(t)[1]; fetch("/api/ask", { method: "POST", headers: { "x-floorplan-token": k }, body: "{}" }); });</script>';
+test('static files are inert: a committed x.html, x.svg, x.js, x.mjs, x.css and an unknown type are sent as before (status, type, body) with Content-Security-Policy: sandbox and nosniff; / and /index.html are the app and have no sandbox', { skip }, async () => {
+  const copy = path.join(tmpDir('modelmap-inert-'), 'modelmap');
+  fs.cpSync(map, copy, { recursive: true, filter: (f) => !f.includes(path.sep + '.cache') });
+  const files = {
+    'x.html': [HOSTILE_PAGE, 'text/html; charset=utf-8'],
+    'x.svg': ['<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/")</script></svg>', 'image/svg+xml'],
+    'x.js': ['fetch("/");', 'text/javascript'],
+    'x.mjs': ['await fetch("/");', 'text/javascript'],
+    'x.css': ['body { color: red }', 'text/css'],
+    'x.json': ['{"a":1}', 'application/json'],
+    'x.txt': ['<script>fetch("/")</script>', 'application/octet-stream'],
+    'x.unknownext': ['<html><script>fetch("/")</script></html>', 'application/octet-stream'],
+    'noextension': ['<html><script>fetch("/")</script></html>', 'application/octet-stream'],
+  };
+  for (const [name, [text]] of Object.entries(files)) fs.writeFileSync(path.join(copy, name), text);
+  const second = await startServe(copy);
+  try {
+    for (const [name, [text, type]] of Object.entries(files)) {
+      const r = await request(second.port, { path: '/' + name });
+      assert.equal(r.status, 200, name);
+      assert.equal(r.headers['content-type'], type, name);
+      assert.equal(r.body, text, name);
+      assert.equal(r.headers['content-security-policy'], 'sandbox', name); // exactly: no allow-… token
+      assert.equal(r.headers['x-content-type-options'], 'nosniff', name);
+      assert.equal(r.headers['cache-control'], 'no-store', name);
+    }
+    // the ways a static request ends without a file carry them too
+    for (const p of ['/nothing.html', '/.cache/server.json', '/%E0%A4%A']) {
+      const r = await request(second.port, { path: p });
+      assert.ok(r.status === 404 || r.status === 400, p + ' ' + r.status);
+      assert.equal(r.headers['content-security-policy'], 'sandbox', p);
+      assert.equal(r.headers['x-content-type-options'], 'nosniff', p);
+    }
+    // the page itself: no sandbox (it could not run), its own policy in the page, its token still in it
+    for (const p of ['/', '/index.html']) {
+      const r = await request(second.port, { path: p });
+      assert.equal(r.status, 200, p);
+      assert.equal(r.headers['content-security-policy'], undefined, p + ' is the app: no sandbox header');
+      assert.match(r.headers['content-type'], /text\/html/);
+      assert.equal((r.body.match(/<meta http-equiv="Content-Security-Policy"[^>]*>/g) || []).length, 1, p);
+      assert.ok(r.body.includes(second.token), p + ' still carries the token for its own scripts');
+    }
+    // an opened static page gets nothing of the page's token from a request of its own kind: the file is only what it was
+    assert.ok(!(await request(second.port, { path: '/x.html' })).body.includes(second.token));
+  } finally { await second.stop(); }
+});
+
+test('what the page loads does not go through the static route: its scripts, styles and logo are inline, and it only calls /api/*', { skip }, async () => {
+  const page = (await request(srv.port, { path: '/' })).body;
+  assert.doesNotMatch(page, /<iframe\b|<script[^>]*\ssrc=|<link[^>]*\shref=["'](?!data:)|<img[^>]*\ssrc=["'](?!data:)/i); // the icon and the logo are data: URIs
+  const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'skills', 'modelmap', 'assets', 'viewer.html'), 'utf8');
+  for (const m of src.matchAll(/\bfetch\(\s*(['"`])(\/[^'"`?]*)/g)) assert.ok(m[2] === '/' || m[2].startsWith('/api/'), 'the page fetches ' + m[2]);
 });

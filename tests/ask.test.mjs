@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { hasPython, fixture } from './helpers.mjs';
-import { buildMap, startServe, calls, ask, request, alive, waitFor } from './helpers-ask.mjs';
+import { buildMap, startServe, calls, ask, askStream, cancel, request, alive, waitFor } from './helpers-ask.mjs';
 
 const skip = !hasPython && 'python3 (3.9+) is needed to scan the fixture';
 let map, root, srv;
@@ -155,16 +155,18 @@ test('no session, an empty string and null are all a new conversation: no --resu
   }
 });
 
-test('/api/cancel stops a running CLI', { skip }, async () => {
+test('/api/cancel stops the running CLI whose id (from its start event) it is given', { skip }, async () => {
   const before = calls(srv.log).length;
-  const pending = ask(srv, { question: '#hang' });
+  const pending = askStream(srv, { question: '#hang' });
   const call = await waitFor(() => calls(srv.log).slice(before).find((c) => c.hang));
   assert.ok(call, 'the fake started');
   assert.ok(alive(call.pid));
-  const c = await request(srv.port, { method: 'POST', path: '/api/cancel', headers: { 'x-floorplan-token': srv.token } });
+  const id = await pending.started;
+  assert.match(id, /^[0-9a-f]{12}$/);
+  const c = await cancel(srv, { id });
   assert.equal(c.status, 204);
   assert.ok(await waitFor(() => !alive(call.pid)), 'the fake was stopped');
-  const r = await pending;
+  const r = await pending.done;
   assert.ok(!r.events.some((e) => e.event === 'answer'));
 });
 
