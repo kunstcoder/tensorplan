@@ -44,10 +44,45 @@ const WRITTEN = ['.cache', '.cache/server.json', '.cache/answer-schema.json', '.
 }
 const realHere = fs.realpathSync.native(here);
 const readState = () => { try { return readJson(stateFile); } catch { return null; } };
+// --stop trusts nothing in .cache/server.json until it is checked: the repo can ship that file. This is a copy of the checks in
+// scripts/lib/common.mjs (validServerRecord, readServerRecord, verifiedStatus), which open.mjs uses and this file cannot import
+// (it is copied into the map folder). Keep the two the same. A record that fails is stale: nothing is requested, no pid is killed.
+const SERVER_URL = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/?$/;
+function validServerRecord(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const { pid, port, url, token } = v;
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return null;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const m = typeof url === 'string' ? SERVER_URL.exec(url) : null;
+  if (!m || Number(m[1]) !== port) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' || u.hostname !== '127.0.0.1' || u.username || u.password || u.pathname !== '/' || u.search || u.hash) return null;
+  } catch { return null; }
+  if (typeof token !== 'string' || !/^[0-9a-f]{16,64}$/.test(token)) return null;
+  return { pid, port, url: 'http://127.0.0.1:' + port, token };
+}
+function readServerRecord(file) {
+  try {
+    const st = fs.lstatSync(file); // not a link, a regular file, at most 4 KB, owned by this user
+    if (!st.isFile() || st.size > 4096 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) return null;
+    const raw = fs.readFileSync(file, 'utf8');
+    return Buffer.byteLength(raw) > 4096 ? null : validServerRecord(JSON.parse(raw));
+  } catch { return null; }
+}
+/** GET /api/status of the server a validated record names, with its token: true when it is the record's own pid and this map's root. */
+async function verifiedStatus(rec) {
+  try {
+    const r = await fetch(rec.url + '/api/status', { headers: { 'x-floorplan-token': rec.token }, redirect: 'manual', signal: AbortSignal.timeout(3000) });
+    if (r.status !== 200) return false;
+    const st = await r.json();
+    return !!st && typeof st === 'object' && st.pid === rec.pid && typeof st.root === 'string' && fs.realpathSync.native(st.root) === fs.realpathSync.native(root);
+  } catch { return false; }
+}
 if (has('stop')) {
-  const s = readState();
+  const s = readServerRecord(stateFile);
   let stopped = false;
-  if (s?.pid) { try { process.kill(s.pid); stopped = true; } catch {} }
+  if (s && await verifiedStatus(s)) { try { process.kill(s.pid); stopped = true; } catch {} }
   try { fs.unlinkSync(stateFile); } catch {}
   console.log(stopped ? `Stopped the map server (${s.url}).` : 'The map server was not running.');
   process.exit(0);

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { parseArgs, mapDir, unattendedMode, readJsonFile, refuseSymlinks } from './lib/common.mjs';
+import { parseArgs, mapDir, unattendedMode, refuseSymlinks, readServerRecord, verifiedStatus, SERVER_URL } from './lib/common.mjs';
 import { editorTemplate } from '../assets/page-safety.mjs';
 import { cliLabel } from './lib/agent.mjs';
 
@@ -36,8 +36,15 @@ const editor = args.editor === undefined ? null : editorTemplate(args.editor ===
 if (editor?.error) { console.error(`✗ --editor ${editor.error}`); process.exit(1); }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const readState = () => { try { return readJsonFile(stateFile); } catch { return null; } };
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+// .cache/server.json can be a file the scanned repo shipped. Nothing in it is used until the file and its values are checked
+// (readServerRecord: a regular file of this user, an address that is exactly http://127.0.0.1:<port>) and the server it
+// names has answered for this map with its token (verifiedStatus). A record that fails is stale: it is not requested, not
+// opened, its pid is not killed, its port is not passed on, and a new server is started as if there was none.
+// serve.mjs --stop makes the same checks (it keeps a copy of them).
+const mapRoot = path.dirname(fs.realpathSync.native(dir)); // what serve.mjs reports as root: the folder that holds the map folder
+// EPERM is a process of another user: not this map's server
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// only called with a record that passed the checks above
 async function api(s, p) {
   try {
     const r = await fetch(s.url + p, { headers: { 'x-floorplan-token': s.token }, signal: AbortSignal.timeout(3000) });
@@ -45,13 +52,16 @@ async function api(s, p) {
   } catch { return null; }
 }
 function openBrowser(u) {
+  if (!SERVER_URL.test(u)) return false; // only a map server's own address
   const [cmd, a] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', u]] : process.platform === 'darwin' ? ['open', [u]] : ['xdg-open', [u]];
   try { spawn(cmd, a, { stdio: 'ignore', detached: true, windowsHide: true }).unref(); return true; } catch { return false; }
 }
 const hash = crypto.createHash('sha1').update(fs.readFileSync(serveFile)).digest('hex').slice(0, 12);
 
-let s = readState();
-let status = s?.pid && alive(s.pid) ? await api(s, '/api/status') : null;
+const found = readServerRecord(stateFile);
+let s = found.rec;
+let status = s && alive(s.pid) ? await verifiedStatus(s, mapRoot) : null;
+if (!status) s = null; // stale: nothing of it is used from here on
 let restarted = false;
 const hadTabs = status?.tabs > 0;
 
@@ -66,10 +76,12 @@ if (status && (status.hash !== hash || (editor?.template && status.editor !== ed
 
 if (!status) {
   const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor'].flatMap((k) => (args[k] ? ['--' + k, String(args[k])] : []));
-  if (!args.port && s?.port) pass.push('--port', String(s.port)); // keep the address people have open
+  if (!args.port && s?.port) pass.push('--port', String(s.port)); // keep the address people have open (s: the server just stopped, which was checked)
   // the server's log and state go under .cache: not through a symbolic link a repo shipped (--out: only what is inside is checked)
   refuseSymlinks(dir, [path.join(dir, '.cache'), path.join(dir, '.cache', 'server.log')], { strict: !args.out });
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  // serve.mjs will not start over a symbolic link at its record: take the link away (never what it points to)
+  try { if (fs.lstatSync(stateFile).isSymbolicLink()) fs.unlinkSync(stateFile); } catch {}
   const log = fs.openSync(path.join(dir, '.cache', 'server.log'), 'w');
   const prev = s?.pid;
   spawn(process.execPath, [serveFile, '--no-open', '--idle-exit', String(IDLE_MINUTES), ...pass], {
@@ -78,8 +90,11 @@ if (!status) {
   // finding the Claude Code or Codex CLI takes a few seconds before the server listens
   for (let i = 0; i < 100; i++) {
     await sleep(200);
-    const n = readState();
-    if (n?.pid && n.pid !== prev && alive(n.pid)) { s = n; status = await api(s, '/api/status'); if (status) break; }
+    // the new server's own record: not the one that was there before (a stale record is not read again), and it has to pass the same checks
+    const n = readServerRecord(stateFile);
+    if (!n.rec || n.raw === found.raw || n.rec.pid === prev || !alive(n.rec.pid)) continue;
+    const st = await verifiedStatus(n.rec, mapRoot);
+    if (st) { s = n.rec; status = st; break; }
   }
   if (!status) {
     console.error(`✗ The map server didn't start. Its log is in ${rel}/.cache/server.log. The map still opens as a file: ${rel}/index.html`);

@@ -135,6 +135,92 @@ export function git(cwd, args) {
   return gitRun(cwd, args).out;
 }
 
+// ---------- values read from files that a repo can ship ----------
+// Everything under <repo>/modelmap/ can be committed by the scanned repo, and it is read before a build overwrites it:
+// graph.json (meta.repos), .cache/server.json, .cache/scan.json, descriptions/*.json. A value from such a file never
+// becomes a git option, a path outside the repo, a process id that is killed, or an address that is requested or opened,
+// without one of the checks below. (serve.mjs keeps a small copy of the server.json checks: it is copied into the map
+// folder and cannot import from here. Keep the two the same.)
+
+/** A git object name as the map records it (meta.repos[].head): lowercase hex, 7 to 64 characters. */
+export const isGitObjectName = (v) => typeof v === 'string' && /^[0-9a-f]{7,64}$/.test(v);
+
+/**
+ * The absolute path of the folder that value (meta.repos[].path) names inside root, or null when value is not a plain
+ * relative path inside it: not a string, a NUL, a leading "-", an absolute path or a drive letter, a path that leaves root
+ * (by "..", or through a symbolic link). A missing or empty value is the root itself. A folder that is not there is returned
+ * as it is: git simply fails there. ".." is resolved in the text, as path.resolve does, and only the result is used.
+ */
+export function folderInside(root, value) {
+  if (value === undefined || value === null || value === '') value = '.';
+  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0') || value.startsWith('-')) return null;
+  if (/^[a-zA-Z]:/.test(value) || /^[\\/]/.test(value) || path.isAbsolute(value)) return null;
+  const within = (base, p) => { const r = path.relative(base, p); return r !== '..' && !r.startsWith('..' + path.sep) && !path.isAbsolute(r); };
+  const base = path.resolve(root), abs = path.resolve(base, value.replace(/\\/g, '/'));
+  if (!within(base, abs)) return null;
+  if (!within(realPathOf(base), realPathOf(abs))) return null; // a link on the way out counts, also when the folder itself is not there
+  return abs;
+}
+
+// ---------- the record of a running server: <map>/.cache/server.json ----------
+// serve.mjs writes { pid, port, url, token, hash, startedAt } there, 0600, and a repo can ship a file of its own.
+// A record is used only when (1) the file is a regular file this user owns, no link and at most 4 KB, (2) its form is
+// what serve.mjs writes: url is exactly http://127.0.0.1:<port>, and (3) that server answers /api/status with the
+// token and with this record's pid and this map's root (verifiedStatus). Anything else is stale: it is not requested,
+// not opened, its pid is not killed and its port is not passed on.
+export const SERVER_URL = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/?$/;
+const MAX_RECORD_BYTES = 4096;
+
+/** The record in v (parsed JSON) as { pid, port, url, token } with url rebuilt from port, or null when it is not what serve.mjs writes. */
+export function validServerRecord(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const { pid, port, url, token } = v;
+  // never pid 0 (our own group), 1, a negative number (a process group), this process or its parent
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return null;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const m = typeof url === 'string' ? SERVER_URL.exec(url) : null;
+  if (!m || Number(m[1]) !== port) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' || u.hostname !== '127.0.0.1' || u.username || u.password || u.pathname !== '/' || u.search || u.hash) return null;
+  } catch { return null; }
+  if (typeof token !== 'string' || !/^[0-9a-f]{16,64}$/.test(token)) return null;
+  return { pid, port, url: 'http://127.0.0.1:' + port, token };
+}
+
+/**
+ * Reads the record file: { rec, raw }. rec is the validated record, or null (no file, a link, not a regular file, more than
+ * 4 KB, owned by another user, not JSON, not valid). raw is the text read, to tell a later rewrite from this one. uid is
+ * the owner that is accepted (the current user; null where there are no user ids).
+ */
+export function readServerRecord(file, { uid = typeof process.getuid === 'function' ? process.getuid() : null } = {}) {
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.size > MAX_RECORD_BYTES || (uid !== null && st.uid !== uid)) return { rec: null, raw: null };
+    const raw = fs.readFileSync(file, 'utf8');
+    if (Buffer.byteLength(raw) > MAX_RECORD_BYTES) return { rec: null, raw: null };
+    let v = null;
+    try { v = JSON.parse(raw); } catch { /* not JSON */ }
+    return { rec: validServerRecord(v), raw };
+  } catch { return { rec: null, raw: null }; }
+}
+
+/**
+ * GET /api/status of the server a validated record names, with its token: the status when the answer is 200 JSON from the
+ * record's own pid and from this map (mapRoot is the folder that holds the map folder, what serve.mjs reports as root;
+ * compared by real path), else null. A pid is killed only after this passed in the same run. Redirects are not followed.
+ */
+export async function verifiedStatus(rec, mapRoot) {
+  try {
+    const r = await fetch(rec.url + '/api/status', { headers: { 'x-floorplan-token': rec.token }, redirect: 'manual', signal: AbortSignal.timeout(3000) });
+    if (r.status !== 200) return null;
+    const st = await r.json();
+    if (!st || typeof st !== 'object' || st.pid !== rec.pid || typeof st.root !== 'string') return null;
+    if (fs.realpathSync.native(st.root) !== fs.realpathSync.native(mapRoot)) return null;
+    return st;
+  } catch { return null; }
+}
+
 /**
  * --json: prints one JSON object on stdout and nothing else there. With `code`, exits with it once the
  * output has been written (a pipe may still be taking it when process.exit would cut it short).

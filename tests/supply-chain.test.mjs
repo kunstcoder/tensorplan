@@ -158,6 +158,11 @@ export function checkSpawns(files, table = SPAWNS) {
 
 const SERVE = 'skills/modelmap/assets/serve.mjs';
 const OPEN = 'skills/modelmap/scripts/open.mjs';
+const COMMON = 'skills/modelmap/scripts/lib/common.mjs';
+// the one address a script may request from .cache/server.json: rec.url of a record that validServerRecord accepted, which is
+// http://127.0.0.1:<port> rebuilt from its port (the same check is in lib/common.mjs for open.mjs and in serve.mjs for --stop)
+const STATUS_FETCH = "rec.url + '/api/status'";
+const SERVER_URL_SRC = String.raw`const SERVER_URL = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/?$/;`;
 // browser code: the page and its add-ons, served by serve.mjs; a relative URL goes to that same local server
 const isPage = (f) => f === 'skills/modelmap/assets/viewer.html' || /^skills\/modelmap\/assets\/ui\/[^/]+\.js$/.test(f);
 const RELATIVE = new RegExp('^([\'"' + BT + '])\\/(?!\\/)');
@@ -174,10 +179,31 @@ export function checkNetwork(files) {
     const arg = x.m[1].trim();
     if (x.file === SERVE && (LOCALHOST.test(arg) || RELATIVE.test(arg))) continue;
     if (isPage(x.file) && RELATIVE.test(arg)) continue;
-    // open.mjs asks the map's running server for its status: s.url is the address serve.mjs wrote to
-    // .cache/server.json, which is always http://127.0.0.1:<port> (checked below)
+    // open.mjs asks the map's running server for its status: s is a record that readServerRecord accepted, so s.url is
+    // http://127.0.0.1:<port> and nothing else (the checks are pinned below), and the server has answered for this map
     if (x.file === OPEN && arg === 's.url + p') continue;
+    // the request that decides whether a record is trusted (verifiedStatus in lib/common.mjs; its copy in serve.mjs --stop)
+    if ((x.file === COMMON || x.file === SERVE) && arg === STATUS_FETCH) continue;
     f.push(x.file + ':' + x.n + ' fetch(' + arg);
+  }
+  // What is read from .cache/server.json (a file the scanned repo can ship) is used only after these checks, in lib/common.mjs
+  // for open.mjs and in a copy in serve.mjs for --stop: the address is exactly http://127.0.0.1:<port> and is rebuilt from the
+  // port, the pid is a real one that is not this process or its parent, the token is hex, and no redirect is followed.
+  for (const file of [COMMON, SERVE]) {
+    const text = files.get(file);
+    if (text === undefined) continue;
+    if (!text.includes(SERVER_URL_SRC)) f.push(file + ': the check of the address in server.json (SERVER_URL) is not the one that allows only http://127.0.0.1:<port>');
+    if (!/new URL\(url\)[\s\S]{0,120}u\.protocol !== 'http:' \|\| u\.hostname !== '127\.0\.0\.1' \|\| u\.username \|\| u\.password \|\| u\.pathname !== '\/' \|\| u\.search \|\| u\.hash/.test(text)) f.push(file + ': the URL parts of server.json are not all checked (protocol, host, credentials, path, query, hash)');
+    if (!/pid <= 1 \|\| pid === process\.pid \|\| pid === process\.ppid/.test(text) || !/Number\.isSafeInteger\(pid\)/.test(text)) f.push(file + ': the pid of server.json is not checked');
+    if (!/return \{ pid, port, url: 'http:\/\/127\.0\.0\.1:' \+ port, token \};/.test(text)) f.push(file + ': the address used is not rebuilt from the port');
+    if (!/fetch\(rec\.url \+ '\/api\/status', \{ headers: \{ 'x-floorplan-token': rec\.token \}, redirect: 'manual'/.test(text)) f.push(file + ': the status request does not refuse redirects');
+    if (!/st\.pid (?:===|!==) rec\.pid/.test(text) || !/realpathSync\.native\(st\.root\)/.test(text)) f.push(file + ': the answer of the server is not checked for its pid and root');
+  }
+  const open = files.get(OPEN);
+  if (open !== undefined) {
+    if (!/import \{[^}]*\breadServerRecord\b[^}]*\bverifiedStatus\b[^}]*\bSERVER_URL\b[^}]*\} from '\.\/lib\/common\.mjs';/.test(open)) f.push(OPEN + ': does not use readServerRecord, verifiedStatus and SERVER_URL from lib/common.mjs');
+    if (!/function openBrowser\(u\) \{\n {2}if \(!SERVER_URL\.test\(u\)\) return false;/.test(open)) f.push(OPEN + ': openBrowser does not check the address first');
+    if (/process\.kill\(pid, 0\)[^\n]*EPERM/.test(open)) f.push(OPEN + ': a process of another user counts as the server again (EPERM)');
   }
   const serve = files.get(SERVE) || '';
   if (serve) {
@@ -323,7 +349,7 @@ test('programs: each file under skills/ and tools/ starts only its allow-listed 
   assert.deepEqual([...files.keys()].filter((f) => f.endsWith('.py')), ['skills/modelmap/scripts/pyscan.py'], UPDATE);
 });
 
-test('network: no fetch, http(s).request, net.connect, WebSocket or XMLHttpRequest outside serve.mjs, except relative URLs in the page and open.mjs asking the local server; serve.mjs listens on 127.0.0.1 only; the page loads nothing from the internet', () => {
+test('network: no fetch, http(s).request, net.connect, WebSocket or XMLHttpRequest outside serve.mjs, except relative URLs in the page, open.mjs asking the local server, and the status request to the http://127.0.0.1:<port> of a validated server.json (lib/common.mjs, serve.mjs --stop); serve.mjs listens on 127.0.0.1 only; the page loads nothing from the internet', () => {
   assert.deepEqual(checkNetwork(files), [], UPDATE);
 });
 
@@ -374,6 +400,19 @@ test('mutation: the checks fail on a planted hook, dependency, spawn of curl, ex
   assert.notDeepEqual(checkNetwork(plant(S, "import net from 'node:net';")), []);
   assert.notDeepEqual(checkNetwork(plant('skills/modelmap/assets/viewer.html', "fetch('https://example.com/x');")), []);
   assert.notDeepEqual(checkNetwork(plant(SERVE, "server.listen(port, '0.0.0.0');")), []);
+  // server.json: another request, another address check, no checks of the record
+  assert.notDeepEqual(checkNetwork(plant(COMMON, "await fetch(rec.url + '/api/other');")), []);
+  assert.notDeepEqual(checkNetwork(plant(SERVE, "await fetch(url + '/api/status');")), []);
+  assert.notDeepEqual(checkNetwork(plant(OPEN, "await fetch(rec.url + '/api/status');")), []);
+  for (const [file, from, to] of [
+    [COMMON, '127\\.0\\.0\\.1:([1-9]', '[^/]+:([1-9]'], [SERVE, 'u.hostname !== ', 'u.hostname === '], [COMMON, "redirect: 'manual'", "redirect: 'follow'"],
+    [SERVE, 'pid <= 1 || ', ''], [COMMON, "url: 'http://127.0.0.1:' + port", 'url'], [SERVE, 'st.pid === rec.pid', 'true'], [OPEN, 'if (!SERVER_URL.test(u)) return false;', ''],
+  ]) {
+    const m = new Map(files);
+    assert.ok(m.get(file).includes(from), 'the planted change does not match: ' + from);
+    m.set(file, m.get(file).replace(from, () => to));
+    assert.notDeepEqual(checkNetwork(m), [], 'not caught: ' + file + ' ' + from);
+  }
   assert.notDeepEqual(checkDynamicCode(plant(S, 'eval(text);')), []);
   assert.notDeepEqual(checkDynamicCode(plant(SERVE, "const g = new Function('return 1');")), []);
   assert.notDeepEqual(checkDynamicCode(plant(S, "const m = await import('./x.mjs');")), []);
