@@ -185,3 +185,44 @@ test('Export sends modelmap-<project>.html: only a-z, 0-9 and -, and modelmap.ht
   assert.equal(cli.status, 0, cli.stderr);
   assert.ok(fs.existsSync(path.join(map, 'modelmap-net.html')), cli.stdout);
 });
+
+// Static files need no token, so a symbolic link in the map folder (a repo can carry one) must never be followed: not to a
+// file outside the folder, not to .cache/server.json (the Ask token), not through a folder link, not along a chain.
+const linksSkip = skip || (process.platform === 'win32' && 'creating symbolic links needs privileges on Windows');
+test('static files: a symbolic link is never followed (outside file, .cache/server.json, a folder link, a chain, a broken link, a link inside the folder), and normal files still load', { skip: linksSkip }, async () => {
+  const w = tmpDir('modelmap-staticlinks-');
+  const outside = path.join(w, 'outside'), copy = path.join(w, 'modelmap');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), SECRET);
+  fs.cpSync(map, copy, { recursive: true, filter: (f) => !f.includes(path.sep + '.cache') });
+  const second = await startServe(copy);
+  try {
+    const at = (n) => path.join(copy, n);
+    // links, all made after the server started: the check is made per request
+    fs.symlinkSync(path.join(outside, 'secret.txt'), at('leak.json'));            // a file outside the folder
+    fs.symlinkSync(path.join('.cache', 'server.json'), at('token.json'));         // the Ask token, from inside the folder
+    fs.symlinkSync('.cache', at('dotlink'));                                      // a folder link to .cache
+    fs.symlinkSync(outside, at('linkdir'));                                       // a folder outside, with a file under it
+    fs.symlinkSync('b.json', at('a.json'));                                       // a chain: a -> b -> outside
+    fs.symlinkSync(path.join(outside, 'secret.txt'), at('b.json'));
+    fs.symlinkSync('no-such-file', at('broken.json'));                            // a broken link
+    fs.symlinkSync('graph.json', at('alias.json'));                               // a link to a file inside the folder
+    fs.symlinkSync('descriptions', at('inner'));                                  // a link to a folder inside the folder
+    fs.mkdirSync(at('descriptions'), { recursive: true });
+    fs.writeFileSync(path.join(at('descriptions'), 'x.json'), '{}');
+    fs.writeFileSync(at('notes.json'), '{"plain":true}');
+    for (const p of ['/leak.json', '/token.json', '/dotlink/server.json', '/linkdir/secret.txt', '/a.json', '/b.json', '/broken.json', '/alias.json', '/inner/x.json', '/linkdir', '/linkdir/', '/dotlink']) {
+      const r = await request(second.port, { path: p });
+      assert.equal(r.status, 404, p + ' was served: ' + r.body.slice(0, 80));
+      assert.equal(r.body, 'not found', p);
+      assert.ok(!r.body.includes(SECRET) && !r.body.includes(second.token), p + ' leaked');
+    }
+    // what is a plain file in the folder is served, as before
+    for (const [p, type] of [['/graph.json', /json/], ['/index.html', /html/], ['/query.mjs', /javascript/], ['/notes.json', /json/], ['/descriptions/x.json', /json/]]) {
+      const r = await request(second.port, { path: p });
+      assert.equal(r.status, 200, p);
+      assert.match(r.headers['content-type'], type, p);
+    }
+    assert.deepEqual(JSON.parse((await request(second.port, { path: '/notes.json' })).body), { plain: true });
+  } finally { await second.stop(); fs.rmSync(w, { recursive: true, force: true }); }
+});

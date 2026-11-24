@@ -50,7 +50,8 @@ try {
       // compared: false when there's no commit to compare (no git repo now, or none when the map was built)
       if (!head || !r.head) { lines.push(`  ${r.path}: not a git repo now`); data.repos.push({ path: r.path, compared: false }); continue; }
       const changed = head === r.head ? [] : (git(abs, ['diff', '--name-only', r.head, head]) || '').split('\n').filter(Boolean);
-      const dirty = (git(abs, ['status', '--porcelain']) || '').split('\n').filter(Boolean).length;
+      // --ignore-submodules=all: status would otherwise look inside each submodule, with that submodule's own .git/config (lib/common.mjs)
+      const dirty = (git(abs, ['status', '--porcelain', '--ignore-submodules=all']) || '').split('\n').filter(Boolean).length;
       data.repos.push({ path: r.path, compared: true, sameCommit: head === r.head, changedFiles: changed.length, uncommitted: dirty });
       lines.push(`  ${r.path}: ${head === r.head ? 'same commit' : `${changed.length} file(s) changed since ${r.head.slice(0, 7)}`}${dirty ? `, ${dirty} uncommitted` : ''}`);
       if (changed.length) lines.push(`    e.g. ${changed.slice(0, 6).map((p) => (r.path === '.' ? p : `${r.path}/${p}`)).join(', ')}`);

@@ -30,6 +30,19 @@ const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\u
 const opt = (name, dflt) => { const i = argv.indexOf('--' + name); return i < 0 ? dflt : argv[i + 1]; };
 const has = (name) => argv.includes('--' + name);
 const stateFile = path.join(here, '.cache', 'server.json');
+// This folder can arrive inside a repo, and a symbolic link in it (a file, or .cache) would make the server read or write
+// somewhere else. The message names the first one in names (paths below this folder), or is null. Checked before anything
+// starts, and again before a write while the server runs. (lib/common.mjs has the same check for the build scripts.)
+const linkMessage = (names) => {
+  const p = names.map((n) => path.join(here, n)).find((q) => { try { return fs.lstatSync(q).isSymbolicLink(); } catch { return false; } });
+  return p ? `✗ ${p} is a symbolic link. modelmap will not serve or write through it. Remove it, then run build.mjs again.` : null;
+};
+const WRITTEN = ['.cache', '.cache/server.json', '.cache/answer-schema.json', '.cache/flow-schema.json', 'custom-flows.json'];
+{
+  const bad = linkMessage(['index.html', 'graph.json', 'query.mjs', ...WRITTEN]);
+  if (bad) { console.error(bad); process.exit(1); }
+}
+const realHere = fs.realpathSync.native(here);
 const readState = () => { try { return readJson(stateFile); } catch { return null; } };
 if (has('stop')) {
   const s = readState();
@@ -192,6 +205,8 @@ function load() {
     flow: { instructions: core.floorplanFlowInstructions(G, 'cli'), schema: core.FLOORPLAN_FLOW_SCHEMA, file: path.join(here, '.cache', 'flow-schema.json') },
   };
   if (ENGINES[engine]?.schemaFile) {
+    const bad = linkMessage(WRITTEN);
+    if (bad) throw new Error(bad);
     fs.mkdirSync(path.join(here, '.cache'), { recursive: true });
     for (const m of Object.values(MODES)) fs.writeFileSync(m.file, JSON.stringify(strict(m.schema)));
   }
@@ -379,6 +394,23 @@ function ask(req, res, body) {
 }
 
 // ---------- http ----------
+/**
+ * The real path of the file to serve for file (a path under this folder), or null. Static files need no token, so only
+ * the file itself is served, never a way to it through a symbolic link (the folder can come with a repo, and a link can
+ * point anywhere, .cache/server.json included): the real path has to be the path asked for, a regular file, inside the real
+ * folder, and nothing below the folder may start with a dot (.cache/server.json holds this run's token). realpath.native
+ * also expands a Windows short name such as CACHE~1, which then is not what was asked for.
+ */
+function staticFile(file) {
+  try {
+    // inside this folder only: a neighbour like ../modelmap-old/ also starts with this folder's path
+    if (!file.startsWith(here + path.sep)) return null;
+    const real = fs.realpathSync.native(file);
+    if (real !== path.join(realHere, path.relative(here, file))) return null;
+    if (path.relative(realHere, real).split(path.sep).some((p) => p.startsWith('.'))) return null;
+    return fs.lstatSync(real).isFile() ? real : null;
+  } catch { return null; }
+}
 const server = http.createServer((req, res) => {
   // only this machine's own names: a website that points its domain at 127.0.0.1 (DNS rebinding) would
   // otherwise count as the same origin as the map, and could read its token from the page
@@ -406,6 +438,8 @@ const server = http.createServer((req, res) => {
         req.on('data', (d) => { raw += d; if (raw.length > 50000) req.destroy(); });
         req.on('end', () => {
           let body = {}; try { body = JSON.parse(raw); } catch {}
+          const bad = linkMessage(WRITTEN);
+          if (bad) { res.writeHead(500, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: bad })); }
           let flows = readFlows().filter((x) => x.id !== body.id && x.id !== body.flow?.id);
           if (req.method === 'POST' && body.flow?.id && Array.isArray(body.flow.steps)) flows.push({ ...body.flow, createdAt: new Date().toISOString() });
           fs.writeFileSync(flowsFile, JSON.stringify({ flows }, null, 2) + '\n');
@@ -443,11 +477,10 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Cache-Control': 'no-store' }); return res.end(page); }
   let file;
   try { file = path.join(here, decodeURIComponent(url.pathname)); } catch { res.writeHead(400); return res.end('bad address'); }
-  // inside this folder only: a neighbour like ../modelmap-old/ also starts with this folder's path. Nothing under a
-  // dot name either: .cache/server.json holds this run's token.
-  if (!file.startsWith(here + path.sep) || path.relative(here, file).split(path.sep).some((p) => p.startsWith('.')) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end('not found'); }
-  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
-  fs.createReadStream(file).pipe(res);
+  const real = staticFile(file);
+  if (!real) { res.writeHead(404); return res.end('not found'); }
+  res.writeHead(200, { 'Content-Type': TYPES[path.extname(real)] || 'application/octet-stream' });
+  fs.createReadStream(real).pipe(res);
 });
 // another map (or anything else) on the port: take the next free one
 let port = wantPort;

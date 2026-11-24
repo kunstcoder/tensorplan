@@ -21,6 +21,11 @@ import os
 import re
 import sys
 
+try:
+    import resource
+except ImportError:   # Windows has no resource module: the memory backstop in tick() is then skipped
+    resource = None
+
 if sys.version_info < (3, 9):
     sys.stdout.write(json.dumps({"fatal": "Python 3.9 or newer is needed to read the code (ast.unparse)."}))
     sys.exit(0)
@@ -30,6 +35,21 @@ MAX_STEPS = 600000          # statements and expressions for one scan
 MAX_LOOP = 4096             # iterations of one loop or comprehension
 MAX_DEPTH = 24              # nesting of constructor calls
 MAX_FILE_BYTES = 2 * 1024 * 1024
+# What one operation may build. Each is checked BEFORE the operation runs, from the sizes of its operands (see
+# binop_refusal); a result above them is unknown ("value too large") and is never computed.
+MAX_SEQ = 100000            # the longest str, list or tuple (this was the limit of sequence * int)
+MAX_BITS = 1024             # the widest int: real values stay far below 2**64
+MAX_NODES = 10000           # elements of one nested value that str() and the JSON output expand (a shared element counts each time)
+# The backstop in tick(): the peak memory of this process. The per-operation limits above are the real protection; this
+# stops what they cannot see (many values that are each small enough). MODELMAP_PYSCAN_MAX_RSS_MB is for the tests: it
+# can only LOWER the limit, a value above it or one that is not a number changes nothing.
+MAX_RSS = 1536 * 1024 * 1024
+try:
+    if 0 < float(os.environ.get("MODELMAP_PYSCAN_MAX_RSS_MB", "")) * 1048576 < MAX_RSS:
+        MAX_RSS = int(float(os.environ["MODELMAP_PYSCAN_MAX_RSS_MB"]) * 1048576)
+except ValueError:
+    pass
+TOO_LARGE = "value too large"
 THIRD_PARTY = {
     "torch", "torchvision", "torchaudio", "timm", "transformers", "einops", "numpy", "math", "functools",
     "collections", "typing", "dataclasses", "os", "sys", "re", "json", "scipy", "pandas", "jax", "flax",
@@ -242,7 +262,7 @@ class Cnt(Exception):
 
 
 class Budget(Exception):
-    pass
+    pass   # str(e) says what ran out; empty means the step budget
 
 
 class Mod:
@@ -267,19 +287,20 @@ class Mod:
         self.attr_at = {}          # attributes with a dimension name: name -> (file:line of the assignment, its text)
         self.why = None
         self.fq = None
+        self.by_name = {}           # name -> its [name, Mod] entry in children (a list of 100,000 modules must not take a scan per add)
 
     def set_child(self, name, child):
-        for c in self.children:
-            if c[0] == name:
-                c[1] = child
-                return
-        self.children.append([name, child])
+        c = self.by_name.get(name)
+        if c is not None:
+            c[1] = child
+            return
+        c = [name, child]
+        self.children.append(c)
+        self.by_name[name] = c
 
     def child(self, name):
-        for c in self.children:
-            if c[0] == name:
-                return c[1]
-        return None
+        c = self.by_name.get(name)
+        return c[1] if c is not None else None
 
 
 class Frame:
@@ -362,6 +383,105 @@ BUILTIN_NAMES = {"range", "len", "int", "float", "str", "bool", "min", "max", "s
                  "getattr", "hasattr", "type", "super", "set", "map", "filter", "divmod", "ord", "chr"}
 
 
+def max_rss():
+    """The peak memory of this process in bytes (macOS counts bytes, Linux kilobytes), or 0 when it cannot be read."""
+    if resource is None:
+        return 0
+    try:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:
+        return 0
+    return peak if sys.platform == "darwin" else peak * 1024
+
+
+class TooLarge(Exception):
+    """An operation would build more than MAX_SEQ or MAX_BITS allow. ev() turns it into an unknown value."""
+
+
+def range_len(r):
+    """len(r) that also works for a range longer than the machine's int (len() raises OverflowError for it)."""
+    step = r.step
+    return max((r.stop - r.start + (step - 1 if step > 0 else step + 1)) // step, 0)
+
+
+def seq_len(v):
+    """The length of a range, str, list, tuple or dict, or None for any other value."""
+    if isinstance(v, range):
+        return range_len(v)
+    return len(v) if isinstance(v, (str, list, tuple, dict)) else None
+
+
+def small(v, limit=MAX_NODES):
+    """True when the nested value v holds at most limit elements in all, an element that is shared counted each time."""
+    total, stack = 1, [v]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, (list, tuple)):
+            total += len(x)
+            if total > limit:
+                return False
+            stack.extend(x)
+        elif isinstance(x, dict):
+            total += 2 * len(x)
+            if total > limit:
+                return False
+            stack.extend(x.keys())
+            stack.extend(x.values())
+    return True
+
+
+_SPEC = re.compile(r"%(?:\([^)]*\))?[#0 +\-]*(\*|\d*)(?:\.(\*|\d*))?")
+
+
+def format_refusal(fmt, arg):
+    """True when fmt % arg could build more than MAX_SEQ characters: a width or precision above 999 or a *, or too much text."""
+    total = len(fmt)
+    args = list(arg) if isinstance(arg, tuple) else list(arg.values()) if isinstance(arg, dict) else [arg]
+    longest = 0
+    for x in args:
+        if isinstance(x, str):
+            longest = max(longest, len(x))
+        elif x is None or isinstance(x, (int, float)):
+            longest = max(longest, 400)
+        else:
+            return True   # a list or the like: how long its text is, is not worked out here
+    for m in _SPEC.finditer(fmt):
+        width, prec = m.group(1), m.group(2)
+        if "*" in (width, prec) or int(width or 0) > 999 or int(prec or 0) > 999:
+            return True
+        total += max(int(width or 0), int(prec or 0), longest)
+    return total > MAX_SEQ
+
+
+def binop_refusal(op, a, b):
+    """Why 'a op b' is not computed (too large), or None. The size of the result is worked out from the sizes of the operands
+    first: an int's bit length, a sequence's length. a and b are ints (bool and the tainted CInt too), floats, strs, lists or tuples."""
+    a_int, b_int = isinstance(a, int), isinstance(b, int)
+    a_seq, b_seq = isinstance(a, (list, tuple, str)), isinstance(b, (list, tuple, str))
+    if op is ast.Add and a_seq and b_seq:
+        return TOO_LARGE if len(a) + len(b) > MAX_SEQ else None
+    if op is ast.Mult and a_seq and b_int:
+        return TOO_LARGE if len(a) * max(b, 0) > MAX_SEQ else None
+    if op is ast.Mult and a_int and b_seq:
+        return TOO_LARGE if max(a, 0) * len(b) > MAX_SEQ else None
+    if op is ast.Mod and isinstance(a, str):
+        return TOO_LARGE if format_refusal(a, b) else None
+    if a_int and b_int:
+        bits_a, bits_b = int.bit_length(a), int.bit_length(b)
+        if op in (ast.Add, ast.Sub):
+            too = max(bits_a, bits_b) + 1 > MAX_BITS
+        elif op is ast.Mult:
+            too = bits_a + bits_b > MAX_BITS
+        elif op is ast.Pow:
+            too = b > 0 and bits_a > 1 and bits_a * b > MAX_BITS   # 0, 1 and -1 stay small to any power; a negative power is a float
+        elif op is ast.LShift:
+            too = b > 0 and bits_a > 0 and bits_a + b > MAX_BITS
+        else:
+            too = False
+        return TOO_LARGE if too else None
+    return None
+
+
 def truth(v):
     if isinstance(v, Unk):
         return None
@@ -394,6 +514,9 @@ class Interp:
         self.steps += 1
         if self.steps > MAX_STEPS:
             raise Budget()
+        # every 2048 steps: the peak memory so far (a backstop; see MAX_RSS)
+        if self.steps % 2048 == 0 and max_rss() > MAX_RSS:
+            raise Budget("memory limit exceeded")
 
     def pick_class(self, name, fq=None, fi=None):
         if ":" in name and fi is None and fq is None:
@@ -492,6 +615,8 @@ class Interp:
             return m(n, fr)
         except (Halt, Ret, Brk, Cnt, Budget):
             raise
+        except TooLarge:
+            return Unk(TOO_LARGE)
         except RecursionError:
             return Unk("expression too deep")
         except Exception as e:  # a value that cannot be computed stays unknown
@@ -499,6 +624,8 @@ class Interp:
 
     def ev_Constant(self, n, fr):
         v = n.value
+        if type(v) is int and v.bit_length() > MAX_BITS:   # a literal of hundreds of digits
+            return Unk(TOO_LARGE)
         return Unk("Ellipsis") if v is Ellipsis else v
 
     def ev_Name(self, n, fr):
@@ -555,6 +682,8 @@ class Interp:
             if isinstance(e, ast.Starred):
                 v = self.ev(e.value, fr)
                 items = self.to_seq(v)
+                if items is not None and len(out) + len(items) > MAX_SEQ:
+                    raise TooLarge()
                 out.extend(items if items is not None else [Unk("a * argument that is not known")])
             else:
                 out.append(self.ev(e, fr))
@@ -580,7 +709,7 @@ class Interp:
         if isinstance(b, Unk):
             return b
         op = type(n.op)
-        if op in (ast.Mult,) and isinstance(a, (list, tuple, str)) and isinstance(b, int) and len(a) * max(b, 0) > 100000:
+        if op in (ast.Mult,) and isinstance(a, (list, tuple, str)) and isinstance(b, int) and len(a) * max(b, 0) > MAX_SEQ:
             return Unk("sequence too long")
         f = {ast.Add: lambda x, y: x + y, ast.Sub: lambda x, y: x - y, ast.Mult: lambda x, y: x * y,
              ast.Div: lambda x, y: x / y, ast.FloorDiv: lambda x, y: x // y, ast.Mod: lambda x, y: x % y,
@@ -591,6 +720,9 @@ class Interp:
         if isinstance(a, (int, float, str, list, tuple, bool)) and isinstance(b, (int, float, str, list, tuple, bool)):
             if op is ast.Pow and isinstance(b, int) and b > 64:
                 return Unk("power too large")
+            why = binop_refusal(op, a, b)   # before f(a, b): nothing too large is ever computed
+            if why:
+                return Unk(why)
             return taint(f(a, b), _taint_at(a, b))
         return Unk("operands are not plain values")
 
@@ -708,6 +840,8 @@ class Interp:
                     return Unk("f-string with an unknown part")
             else:
                 return Unk("f-string with a format spec")
+            if len(out) > MAX_SEQ:
+                raise TooLarge()
         return taint(out, at)
 
     def ev_Lambda(self, n, fr):
@@ -722,6 +856,8 @@ class Interp:
 
         def go(i):
             if i == len(n.generators):
+                if len(out) >= MAX_SEQ:
+                    raise Halt("value too large")
                 out.append(make(fr2))
                 return
             g = n.generators[i]
@@ -764,12 +900,10 @@ class Interp:
 
     # ---------- sequences and targets ----------
     def to_seq(self, v):
-        if isinstance(v, (list, tuple)):
-            return list(v)
-        if isinstance(v, str):
-            return list(v)
+        if isinstance(v, (list, tuple, str)):
+            return list(v) if len(v) <= MAX_SEQ else None
         if isinstance(v, range):
-            return list(v) if len(v) <= MAX_LOOP else None
+            return list(v) if range_len(v) <= MAX_LOOP else None
         if isinstance(v, dict):
             return list(v.keys())
         if isinstance(v, Mod) and v.container in ("list", "seq"):
@@ -809,6 +943,8 @@ class Interp:
                     args.append(Unk("a * argument that is not known"))
                     anodes.append(a)
                 else:
+                    if len(args) + len(items) > MAX_SEQ:
+                        raise TooLarge()
                     for x in items:
                         args.append(x)
                         anodes.append(a)
@@ -936,22 +1072,38 @@ class Interp:
             parent.set_child(name, u)
             parent.incomplete = True
 
+    def forget(self, target, fr):
+        """The list that a call such as extend would have made too long: it is not known from here on, wherever it is kept."""
+        if isinstance(target, ast.Name):
+            fr.locals[target.id] = Unk(TOO_LARGE)
+        elif isinstance(target, ast.Attribute):
+            base = self.ev(target.value, fr)
+            if isinstance(base, Mod):
+                base.attrs[target.attr] = Unk(TOO_LARGE)
+
     def mutate(self, f, n, fr):
         tgt = self.ev(f.value, fr)
         args, anodes, kwargs, knodes = self.eval_args(n, fr)
         if isinstance(tgt, list):
-            if f.attr == "append" and args:
+            items = self.to_seq(args[0]) if f.attr == "extend" and args else None
+            added = 1 if f.attr in ("append", "insert") else len(items) if items is not None else 0
+            if len(tgt) + added > MAX_SEQ:
+                self.forget(f.value, fr)
+            elif f.attr == "append" and args:
                 tgt.append(args[0])
-            elif f.attr == "extend" and args and self.to_seq(args[0]) is not None:
-                tgt.extend(self.to_seq(args[0]))
+            elif items is not None:
+                tgt.extend(items)
             elif f.attr == "insert" and len(args) == 2 and isinstance(args[0], int):
                 tgt.insert(args[0], args[1])
             return None
         if isinstance(tgt, Mod) and tgt.container in ("list", "seq"):
-            if f.attr == "append" and args:
+            items = self.to_seq(args[0]) if f.attr == "extend" and args else None
+            if f.attr in ("append", "extend") and args and len(tgt.children) + (len(items) if items is not None else 1) > MAX_SEQ:
+                tgt.incomplete = True
+                tgt.notes.append("more than " + str(MAX_SEQ) + " modules in one list: the rest is not kept (" + TOO_LARGE + ")")
+            elif f.attr == "append" and args:
                 self.add_child(tgt, str(len(tgt.children)), args[0], anodes[0], fr)
             elif f.attr == "extend" and args:
-                items = self.to_seq(args[0])
                 if items is None:
                     tgt.incomplete = True
                     tgt.notes.append("extend with a list that is not known")
@@ -966,11 +1118,45 @@ class Interp:
             return None
         return None
 
+    def builtin_refusal(self, name, args, kwargs):
+        """Why a builtin is not run on these arguments, because it would build or loop over too much (value too large), or None.
+        Asked BEFORE it runs, from the sizes of the arguments."""
+        if name == "pow":
+            base = args[0] if args else kwargs.get("base")
+            exp = args[1] if len(args) > 1 else kwargs.get("exp")
+            # pow(a, b, m) stays below m, so only the two-argument form can grow
+            if (args[2] if len(args) > 2 else kwargs.get("mod")) is None and isinstance(base, int) and isinstance(exp, int):
+                return binop_refusal(ast.Pow, base, exp)
+        elif name in ("sum", "min", "max") and args and (name == "sum" or len(args) == 1):
+            n = seq_len(args[0])
+            if n is not None and n > MAX_SEQ:
+                return TOO_LARGE
+            start = args[1] if len(args) > 1 else kwargs.get("start")
+            # sum(lists, []) joins them
+            if name == "sum" and isinstance(start, (list, tuple)) and isinstance(args[0], (list, tuple)):
+                if len(start) + sum(len(x) for x in args[0] if isinstance(x, (list, tuple))) > MAX_SEQ:
+                    return TOO_LARGE
+        elif name in ("int", "range"):
+            # int("999...") costs time by the square of the digits; no int above MAX_BITS bits is built anyway
+            if any(isinstance(a, str) and len(a) > MAX_BITS + 64 for a in args):
+                return TOO_LARGE
+        elif name == "round":
+            nd = args[1] if len(args) > 1 else kwargs.get("ndigits")
+            # round(5, -10**7) works out 10**(10**7)
+            if isinstance(nd, int) and abs(nd) > 1000:
+                return TOO_LARGE
+        elif name == "str" and args and isinstance(args[0], (list, tuple, dict)) and not small(args[0]):
+            return TOO_LARGE
+        return None
+
     def builtin(self, name, args, kwargs):
         if any(isinstance(a, Unk) for a in args):
             if name in ("print",):
                 return None
             return Unk(name + " with an unknown argument")
+        why = self.builtin_refusal(name, args, kwargs)
+        if why:
+            return Unk(why)
         try:
             if name == "range":
                 return range(*[int(a) for a in args])
@@ -1273,7 +1459,12 @@ class Interp:
 
 
 # ---------- output ----------
-def jv(v, depth=0):
+def jv(v, depth=0, left=None):
+    if left is None:
+        left = [MAX_NODES]   # one value writes at most this many elements, however its parts are shared
+    left[0] -= 1
+    if left[0] < 0:
+        return {"unknown": "too large"}
     if depth > 6:
         return {"unknown": "too deep"}
     v = plain(v)
@@ -1282,11 +1473,11 @@ def jv(v, depth=0):
     if isinstance(v, float):
         return v if v == v and abs(v) != float("inf") else str(v)
     if isinstance(v, (list, tuple)):
-        return [jv(x, depth + 1) for x in list(v)[:64]]
+        return [jv(x, depth + 1, left) for x in list(v)[:64]]
     if isinstance(v, range):
-        return [jv(x) for x in list(v)[:64]]
+        return [jv(x, depth + 1, left) for x in v[:64]]
     if isinstance(v, dict):
-        return {str(plain(k)): jv(x, depth + 1) for k, x in list(v.items())[:64]}
+        return {str(plain(k)): jv(x, depth + 1, left) for k, x in list(v.items())[:64]}
     if isinstance(v, Unk):
         return {"unknown": v.why}
     if isinstance(v, Cls):
@@ -1294,11 +1485,11 @@ def jv(v, depth=0):
     if isinstance(v, (Ref, Builtin)):
         return {"ref": v.fq if isinstance(v, Ref) else v.name}
     if isinstance(v, Partial):
-        return {"partial": jv(v.target, depth + 1), "args": [jv(a, depth + 1) for a in v.args], "kwargs": {k: jv(x, depth + 1) for k, x in v.kwargs.items()}}
+        return {"partial": jv(v.target, depth + 1, left), "args": [jv(a, depth + 1, left) for a in v.args], "kwargs": {k: jv(x, depth + 1, left) for k, x in v.kwargs.items()}}
     if isinstance(v, Mod):
         return {"module": v.cls}
     if isinstance(v, (TensorV, ParamV)):
-        return {"tensor": jv(list(v.shape), depth + 1) if not isinstance(v.shape, Unk) else {"unknown": v.shape.why}}
+        return {"tensor": jv(list(v.shape), depth + 1, left) if not isinstance(v.shape, Unk) else {"unknown": v.shape.why}}
     if isinstance(v, FuncV):
         return {"ref": v.node.name}
     if isinstance(v, PRef):
@@ -1834,8 +2025,8 @@ def main():
             result["forward"] = forward_json(scan, info)
             if dim_names:
                 result["dims"] = dims_json(scan, mod, dim_names, frozenset(str(x) for x in (job.get("dimAttrs") or [])))
-        except Budget:
-            result["warnings"] = ["step budget exceeded; the tree may be partial"]
+        except Budget as e:
+            result["warnings"] = [(str(e) or "step budget exceeded") + "; the tree may be partial"]
     elif name:
         result["warnings"] = ["class " + name + " was not found"]
     same = [c for c in scan.by_name.get(info.name, [])] if info is not None else []

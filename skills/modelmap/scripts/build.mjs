@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { git } from './lib/common.mjs';
+import { git, refuseSymlinks } from './lib/common.mjs';
 import { toGraph, loadDescriptions } from './lib/graph.mjs';
 import { scriptJson, scriptCode, withPolicy } from '../assets/page-safety.mjs';
 
@@ -42,6 +42,9 @@ const args = parseArgs(process.argv.slice(2));
 const root = path.resolve(args._[0] || '.');
 const outDir = path.resolve(typeof args.out === 'string' ? args.out : path.join(root, 'modelmap'));
 const scanFile = path.resolve(typeof args.scan === 'string' ? args.scan : path.join(outDir, '.cache', 'scan.json'));
+// A repo can ship modelmap/ (or a file in it) as a symbolic link. Nothing is created or written until no link is in the way;
+// with --out the person chose the folder, so only what is in it is checked.
+refuseSymlinks(outDir, ['.cache', 'descriptions', '.gitignore', 'graph.json', 'index.html', 'query.mjs', 'serve.mjs', 'page-safety.mjs'].map((f) => path.join(outDir, f)), { strict: typeof args.out !== 'string' });
 if (!fs.existsSync(scanFile)) fail('No scan at ' + scanFile + '. Run scan.mjs first: node ' + path.join(HERE, 'scan.mjs') + ' ' + JSON.stringify(root));
 let scan;
 try { scan = JSON.parse(fs.readFileSync(scanFile, 'utf8')); } catch (e) { fail(scanFile + ' is not valid JSON (' + e.message + '). Run scan.mjs again.'); }

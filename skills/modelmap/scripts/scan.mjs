@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseArgs, mapDir, listPythonFiles, fmtNum, toPosix } from './lib/common.mjs';
+import { parseArgs, mapDir, listPythonFiles, fmtNum, toPosix, refuseSymlinks } from './lib/common.mjs';
 import { annotate, stats } from './lib/params.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { readWeights, expectKeys, crossCheck } from './lib/safetensors.mjs';
@@ -30,6 +30,12 @@ const args = parseArgs(process.argv.slice(2), { multi: ['arg', 'weights'], flags
 const root = path.resolve(args._[0] || '.');
 const fail = (msg) => { console.error('✗ ' + msg); process.exit(1); };
 if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) fail(root + ' is not a folder');
+
+// Where scan.json goes. A repo can ship modelmap/ (or modelmap/.cache) as a symbolic link to another folder, so nothing
+// is created or written until no link is in the way. With --out the person chose the folder: only what is in it is checked.
+const outDir = path.resolve(args.out || path.join(mapDir(root), '.cache'));
+const outFile = path.join(outDir, 'scan.json');
+refuseSymlinks(args.out ? outDir : mapDir(root), [outFile], { strict: !args.out });
 
 // --arg name=<json value>; a value that is not JSON is taken as a string
 const rootArgs = {};
@@ -91,9 +97,7 @@ if (weights) scan.weights = crossCheck(scan.root, weights, { expected });
 scan.resolution = stats(scan.root);
 scan.meta = { generatedAt: new Date().toISOString(), root: path.basename(root), files: listed.files.length, via: listed.via, truncated: listed.truncated };
 
-const outDir = path.resolve(args.out || path.join(mapDir(root), '.cache'));
 fs.mkdirSync(outDir, { recursive: true });
-const outFile = path.join(outDir, 'scan.json');
 fs.writeFileSync(outFile, JSON.stringify(scan));
 
 if (args.json) {

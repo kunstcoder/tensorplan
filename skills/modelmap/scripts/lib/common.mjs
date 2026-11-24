@@ -36,10 +36,10 @@ const MAX_FILES = 5000;
 export function listPythonFiles(root) {
   let files = null, via = 'walk';
   try {
-    const out = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', '*.py'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
-    files = out.split('\0').filter(Boolean);
-    via = 'git';
-  } catch { /* not a git repo, or no git: walk instead */ }
+    // through git() below, like every git call: the scanned repo's own .git/config must not make git run a program
+    const out = git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', '*.py']);
+    if (out !== null) { files = out.split('\0').filter(Boolean); via = 'git'; }
+  } catch { /* no git: walk instead */ }
   if (!files) {
     files = [];
     const walk = (dir) => {
@@ -72,14 +72,57 @@ export function unattendedMode(args = {}, env = process.env) {
   return isUnattended(env);
 }
 
+// A scanned repo can arrive with its own .git folder (a zip, a shared folder), and git obeys that .git/config. Run
+// against such a repo, these commands start the programs it names (each one tried in a temporary repo with a
+// marker file; the vectors are in UPSTREAM.md section 16):
+//   core.fsmonitor            ls-files, status and check-ignore: switched off with -c below
+//   filter.<name>.clean/process  status, on every file whose stat data differs from the index (any fresh extraction),
+//                             when .gitattributes or .git/info/attributes names the filter: switched off below, by name
+//   a submodule's own config  status looks inside submodules with their config: callers pass --ignore-submodules=all
+//   the post-index-change hook  status, when it writes the index: --no-optional-locks stops that write
+// Not started by these commands: smudge filters, diff.external, textconv, core.pager, hooks other than the one
+// above, core.sshCommand, credential.helper, aliases.
+const GIT_OFF = ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
+const MAX_FILTERS = 50;
+const filterOffs = new Map();
+/**
+ * The -c options that switch off the filter drivers the repo's own config (or a file it includes) defines, or null
+ * when one cannot be named safely. The user's own filters (system and global config, such as git-lfs) stay on.
+ * A filter named only by .gitattributes has no command, so it needs no entry here.
+ */
+function repoFilterOff(cwd) {
+  if (filterOffs.has(cwd)) return filterOffs.get(cwd);
+  const list = (extra) => {
+    try { return execFileSync('git', ['--no-optional-locks', '-C', cwd, 'config', '--list', '-z', ...extra], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return null; }
+  };
+  // -z --show-scope: scope NUL key NL value NUL. Before git 2.26 there is no scope: every filter is switched off then.
+  let text = list(['--show-scope']);
+  const scoped = text !== null;
+  if (!scoped) text = list([]) || '';
+  const parts = text.split('\0'), names = new Set();
+  for (let i = 0; i < parts.length; i += scoped ? 2 : 1) {
+    if (scoped && (parts[i] === 'system' || parts[i] === 'global')) continue;
+    const m = /^filter\.([^\n]+)\.(?:clean|process)(?:\n|$)/.exec((scoped ? parts[i + 1] : parts[i]) || '');
+    if (m) names.add(m[1]);
+  }
+  // -c splits at the first "=", so a name with one cannot be switched off: git is not run in that repo at all
+  const off = names.size > MAX_FILTERS || [...names].some((n) => n.includes('=')) ? null
+    : [...names].flatMap((n) => ['-c', 'filter.' + n + '.clean=', '-c', 'filter.' + n + '.process=', '-c', 'filter.' + n + '.required=false']);
+  filterOffs.set(cwd, off);
+  return off;
+}
+
 /**
  * Runs git with an argument list (never through a shell). Returns { out, error }: out is the trimmed stdout,
  * or null when git failed or is missing. --no-optional-locks keeps read commands such as git status from
- * refreshing the index file, so asking about a repo does not write into it.
+ * refreshing the index file, so asking about a repo does not write into it. The repo's own config cannot make
+ * git run a program (see the list above). Every call to git in these scripts goes through here.
  */
 export function gitRun(cwd, args) {
+  const off = repoFilterOff(cwd);
+  if (!off) return { out: null, error: 'the git config of ' + cwd + ' defines a filter that modelmap cannot switch off, so it does not run git there' };
   try {
-    return { out: execFileSync('git', ['--no-optional-locks', '-C', cwd, ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd(), error: null };
+    return { out: execFileSync('git', ['--no-optional-locks', ...GIT_OFF, ...off, '-C', cwd, ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd(), error: null };
   } catch (e) {
     if (e.code === 'ENOENT') return { out: null, error: 'git is not installed, or not on PATH' };
     const said = String(e.stderr || '').split('\n').map((l) => l.trim()).filter(Boolean);
@@ -116,4 +159,48 @@ export function keepOutOfGit(dir) {
   if (!tracked.length) return null;
   const rel = path.basename(dir);
   return `${tracked.length} file(s) in ${rel}/ were committed to git before; they stay tracked until you run: git rm -r --cached ${rel}  (this keeps the files on disk)`;
+}
+
+// ---------- symbolic links in the map folder ----------
+
+/** The real path of p, or, when p is not all there yet, the real path of its nearest folder that is, plus the rest. */
+function realPathOf(p) {
+  const tail = [];
+  for (let q = p; ; q = path.dirname(q)) {
+    try { return path.join(fs.realpathSync.native(q), ...tail); } catch { /* not there yet: try the folder above */ }
+    if (path.dirname(q) === q) return p;
+    tail.unshift(path.basename(q));
+  }
+}
+
+/**
+ * A repo can carry symbolic links (git stores them, so does a zip): modelmap/ pointing at another folder, or a link
+ * inside it. Writing through one puts files outside the repo. This says why writing the files in targets (paths under
+ * base, the map folder or the one given with --out) is not safe, or returns null when it is. Nothing is written here.
+ * It refuses when base (only when strict), any folder or file between base and a target, or the target is a symbolic
+ * link, whether it points inside the folder or not, whether it is broken or not; and when the real path of a target
+ * would not be inside the real path of base (junctions and short names on Windows come out through this).
+ * strict is the default location (<repo>/modelmap), where the repo decides what is there. With --out the person chose
+ * the folder, even through a link, so base itself may be one; what is inside it is still checked.
+ */
+export function symlinkProblem(base, targets, { strict = true } = {}) {
+  base = path.resolve(base);
+  const isLink = (p) => { try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } };
+  const link = (p) => '✗ ' + p + ' is a symbolic link. modelmap will not write through it. Remove it, or choose a folder with --out.';
+  if (strict && isLink(base)) return link(base);
+  for (const t of targets.map((x) => path.resolve(x))) {
+    const rel = path.relative(base, t);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return '✗ ' + t + ' is not inside ' + base + '. modelmap will not write there.';
+    let cur = base;
+    for (const seg of rel.split(path.sep).filter(Boolean)) { cur = path.join(cur, seg); if (isLink(cur)) return link(cur); }
+    const rb = realPathOf(base), rt = realPathOf(t), inside = path.relative(rb, rt);
+    if (inside.startsWith('..') || path.isAbsolute(inside)) return '✗ ' + t + ' leads to ' + rt + ', outside ' + rb + '. modelmap will not write through it. Remove the link, or choose a folder with --out.';
+  }
+  return null;
+}
+
+/** symlinkProblem, then the message on stderr and exit code 1: call it before the first folder or file is created. */
+export function refuseSymlinks(base, targets, opts) {
+  const problem = symlinkProblem(base, targets, opts);
+  if (problem) { console.error(problem); process.exit(1); }
 }

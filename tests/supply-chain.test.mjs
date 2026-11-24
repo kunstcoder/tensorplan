@@ -218,7 +218,8 @@ export function checkDynamicCode(files) {
 
 // Standard-library modules pyscan.py may import. Not in it on purpose: subprocess, pickle, marshal, shelve,
 // ctypes, importlib, socket, urllib, http, runpy, code, multiprocessing, shutil, tempfile.
-export const PY_STDLIB = ['__future__', 'ast', 'collections', 'copy', 'dataclasses', 'enum', 'functools', 'itertools', 'json', 'keyword', 'math', 'os', 're', 'string', 'sys', 'textwrap', 'tokenize', 'typing', 'unicodedata'];
+// resource: the memory backstop in Interp.tick() reads this process's own peak memory (getrusage); it sets no limit and reaches no file.
+export const PY_STDLIB = ['__future__', 'ast', 'collections', 'copy', 'dataclasses', 'enum', 'functools', 'itertools', 'json', 'keyword', 'math', 'os', 're', 'resource', 'string', 'sys', 'textwrap', 'tokenize', 'typing', 'unicodedata'];
 export function checkPyscan(text) {
   const f = [];
   const raw = text.split('\n');

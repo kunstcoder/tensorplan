@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { parseArgs, mapDir, unattendedMode, readJsonFile } from './lib/common.mjs';
+import { parseArgs, mapDir, unattendedMode, readJsonFile, refuseSymlinks } from './lib/common.mjs';
 import { editorTemplate } from '../assets/page-safety.mjs';
 import { cliLabel } from './lib/agent.mjs';
 
@@ -67,6 +67,8 @@ if (status && (status.hash !== hash || (editor?.template && status.editor !== ed
 if (!status) {
   const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor'].flatMap((k) => (args[k] ? ['--' + k, String(args[k])] : []));
   if (!args.port && s?.port) pass.push('--port', String(s.port)); // keep the address people have open
+  // the server's log and state go under .cache: not through a symbolic link a repo shipped (--out: only what is inside is checked)
+  refuseSymlinks(dir, [path.join(dir, '.cache'), path.join(dir, '.cache', 'server.log')], { strict: !args.out });
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   const log = fs.openSync(path.join(dir, '.cache', 'server.log'), 'w');
   const prev = s?.pid;

@@ -14,7 +14,7 @@
 // more backticks or tildes are rewritten so the text cannot close its fence. The worksheet is capped at 400 KB.
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, mapDir, toPosix, fmtNum, readJsonFile } from './lib/common.mjs';
+import { parseArgs, mapDir, toPosix, fmtNum, readJsonFile, refuseSymlinks } from './lib/common.mjs';
 import { buildContract, checkShape, DIM_TABLE, SHAPE_ONLY, CAPS as CONTRACT_CAPS } from './lib/contract.mjs';
 import { repoLines, indentOf, classText } from './lib/pytext.mjs';
 import { checkFlows, classIndex, FLOW_CAPS } from './lib/flow.mjs';
@@ -361,6 +361,8 @@ function runCheck() {
 }
 
 function runWorksheet() {
+  // the worksheet is written under <out>/.cache; a repo can ship modelmap/ or .cache as a symbolic link (--out: only what is inside is checked)
+  refuseSymlinks(outDir, [path.join(outDir, '.cache'), path.join(outDir, '.cache', 'worksheet.md')], { strict: !args.out });
   const scan = loadScan(true);
   const r = scan.root;
   if (!r) { console.error('✗ ' + shown(scanFile) + ' has no model tree (root). Run scan.mjs again.'); process.exit(1); }

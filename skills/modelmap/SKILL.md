@@ -65,4 +65,5 @@ The repo is the argument if one was given, otherwise the current directory. In e
 - A sum that holds an unknown part shows `≥`; an unknown value shows `?` with its reason. A weight shared by two modules is counted once.
 - Paths in descriptions are instance paths as the worksheet prints them (`blocks.0.attn`); the root's path is `""`.
 - Don't hand-edit `graph.json` or `index.html`; every build rewrites them.
+- If a script stops with "✗ <path> is a symbolic link", `modelmap/` or a file in it came with the repo as a link, and nothing was written. Tell the user which path it named; don't remove the link or pass `--out` to get past it unless they ask you to.
 - A block with a flow shows its data path as arrows with shape labels; every shape is an estimate (Claude read the code, nothing ran). Planned, not built yet: the opt-in runtime trace (real shapes). The Ask bar of the page is being reworked; don't promise it.
